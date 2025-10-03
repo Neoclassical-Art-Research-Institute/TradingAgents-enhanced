@@ -9,17 +9,15 @@ def create_news_analyst(llm, toolkit):
         ticker = state["company_of_interest"]
 
         if toolkit.config["online_tools"]:
-            tools = [toolkit.get_global_news, toolkit.get_google_news]
+            tools = [toolkit.get_global_news, toolkit.get_stock_news]
         else:
-            tools = [
-                toolkit.get_finnhub_news,
-                toolkit.get_reddit_news,
-                toolkit.get_google_news,
-            ]
+            # Offline news tools have been deprecated in favor of the online, grounded search.
+            tools = []
 
         system_message = (
-            "You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Look at news from EODHD, and finnhub to be comprehensive. Do not simply state the trends are mixed, provide detailed and finegrained analysis and insights that may help traders make decisions."
-            + """ Make sure to append a Makrdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            "You are a news researcher tasked with analyzing recent news and trends over the past week for a specific company and the broader market. Your goal is to write a comprehensive report on the current state of the world relevant for trading and macroeconomics, as well as any company-specific developments."
+            " Use your web search capabilities to find the most relevant and up-to-date information. Do not simply state the trends are mixed; provide detailed and fine-grained analysis and insights that may help traders make decisions."
+            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, making it easy to read."""
         )
 
         prompt = ChatPromptTemplate.from_messages(

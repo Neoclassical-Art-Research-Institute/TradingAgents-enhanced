@@ -65,37 +65,7 @@ class Toolkit:
 
         return global_news_result
 
-    @staticmethod
-    @tool
-    def get_finnhub_news(
-        ticker: Annotated[
-            str,
-            "Search query of a company, e.g. 'AAPL, TSM, etc.",
-        ],
-        start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
-        end_date: Annotated[str, "End date in yyyy-mm-dd format"],
-    ):
-        """
-        Retrieve the latest news about a given stock from Finnhub within a date range
-        Args:
-            ticker (str): Ticker of a company. e.g. AAPL, TSM
-            start_date (str): Start date in yyyy-mm-dd format
-            end_date (str): End date in yyyy-mm-dd format
-        Returns:
-            str: A formatted dataframe containing news about the company within the date range from start_date to end_date
-        """
 
-        end_date_str = end_date
-
-        end_date = datetime.strptime(end_date, "%Y-%m-%d")
-        start_date = datetime.strptime(start_date, "%Y-%m-%d")
-        look_back_days = (end_date - start_date).days
-
-        finnhub_news_result = interface.get_finnhub_news(
-            ticker, end_date_str, look_back_days
-        )
-
-        return finnhub_news_result
 
     @staticmethod
     @tool
@@ -115,7 +85,29 @@ class Toolkit:
             str: A formatted dataframe containing the latest news about the company on the given date
         """
 
-        stock_news_results = interface.get_reddit_company_news(ticker, curr_date, 7, 5)
+        stock_news_results = interface.get_reddit_company_news(ticker, curr_date, 7)
+
+        return stock_news_results
+
+    @staticmethod
+    @tool
+    def get_twitter_stock_info(
+        ticker: Annotated[
+            str,
+            "Ticker of a company. e.g. AAPL, TSM",
+        ],
+        curr_date: Annotated[str, "Current date you want to get news for"],
+    ) -> str:
+        """
+        Retrieve the latest news about a given stock from Twitter/X, given the current date.
+        Args:
+            ticker (str): Ticker of a company. e.g. AAPL, TSM
+            curr_date (str): current date in yyyy-mm-dd format to get news for
+        Returns:
+            str: A formatted dataframe containing the latest news about the company on the given date
+        """
+
+        stock_news_results = interface.get_twitter_stock_info(ticker, curr_date, 7)
 
         return stock_news_results
 
@@ -341,25 +333,7 @@ class Toolkit:
 
         return data_income_stmt
 
-    @staticmethod
-    @tool
-    def get_google_news(
-        query: Annotated[str, "Query to search with"],
-        curr_date: Annotated[str, "Curr date in yyyy-mm-dd format"],
-    ):
-        """
-        Retrieve the latest news from Google News based on a query and date range.
-        Args:
-            query (str): Query to search with
-            curr_date (str): Current date in yyyy-mm-dd format
-            look_back_days (int): How many days to look back
-        Returns:
-            str: A formatted string containing the latest news from Google News based on the query and date range.
-        """
 
-        google_news_results = interface.get_google_news(query, curr_date, 7)
-
-        return google_news_results
 
     @staticmethod
     @tool
