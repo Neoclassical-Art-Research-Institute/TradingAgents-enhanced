@@ -319,7 +319,24 @@ function renderFeed() {
                     if (status === 'queued') return '<span class="pill status-queued" title="In queue">🕒 queued</span>';
                     if (status === 'stopped') return '<span class="pill status-stopped" title="Stopped">■ stopped</span>';
                     if (status === 'error') return '<span class="pill status-error" title="Error">⚠ error</span>';
-                    if (status === 'done') return '<span class="pill status-done" title="Completed">✓ done</span>';
+                    if (status === 'done') {
+                        // Try to get completion timestamp from analysis
+                        const completedAt = p.analysis?.completedAt;
+                        if (completedAt) {
+                            try {
+                                const date = new Date(completedAt);
+                                const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                                const dateStr = date.toLocaleDateString();
+                                const today = new Date().toLocaleDateString();
+                                const displayTime = (dateStr === today) ? timeStr : `${date.toLocaleDateString([], {month:'short', day:'numeric'})} ${timeStr}`;
+                                return `<span class="pill status-done" title="Completed at ${date.toLocaleString()}">✓ ${displayTime}</span>`;
+                            } catch {
+                                // Fall back to generic done if timestamp parsing fails
+                                return '<span class="pill status-done" title="Completed">✓ done</span>';
+                            }
+                        }
+                        return '<span class="pill status-done" title="Completed">✓ done</span>';
+                    }
                         return '';
                 })();
                 tr.innerHTML = `
@@ -616,12 +633,46 @@ function openDetail(id) {
         const st = JOB_STATUS.states?.[id] || 'idle';
         els.dAnalyze.disabled = false;
         els.dAnalyze.classList.remove('state-queued','state-running','state-stopped','primary');
-        if (st === 'running') { els.dAnalyze.textContent = 'Stop'; els.dAnalyze.classList.add('state-running'); }
-        else if (st === 'queued') { els.dAnalyze.textContent = 'Cancel from queue'; els.dAnalyze.classList.add('state-queued'); }
-        else if (st === 'stopped') { els.dAnalyze.textContent = 'Analyze (queue)'; els.dAnalyze.classList.add('state-stopped'); }
-        else { els.dAnalyze.textContent = 'Analyze (queue)'; els.dAnalyze.classList.add('primary'); }
+        if (st === 'running') { 
+            els.dAnalyze.textContent = 'Stop'; 
+            els.dAnalyze.classList.add('state-running'); 
+        }
+        else if (st === 'queued') { 
+            els.dAnalyze.textContent = 'Cancel from queue'; 
+            els.dAnalyze.classList.add('state-queued'); 
+        }
+        else if (st === 'stopped') { 
+            els.dAnalyze.textContent = 'Analyze (queue)'; 
+            els.dAnalyze.classList.add('state-stopped'); 
+        }
+        else if (st === 'done') {
+            // Show completion time if available
+            const p = POSTS.find(p => p.id === id);
+            const completedAt = p?.analysis?.completedAt;
+            if (completedAt) {
+                try {
+                    const date = new Date(completedAt);
+                    const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                    const dateStr = date.toLocaleDateString();
+                    const today = new Date().toLocaleDateString();
+                    const displayTime = (dateStr === today) ? `Completed ${timeStr}` : `Completed ${date.toLocaleDateString([], {month:'short', day:'numeric'})} ${timeStr}`;
+                    els.dAnalyze.textContent = displayTime;
+                } catch {
+                    els.dAnalyze.textContent = 'Completed';
+                }
+            } else {
+                els.dAnalyze.textContent = 'Completed';
+            }
+            els.dAnalyze.classList.add('primary'); 
+        }
+        else { 
+            els.dAnalyze.textContent = 'Analyze (queue)'; 
+            els.dAnalyze.classList.add('primary'); 
+        }
     }
     refreshAnalyzeButton();
+    // Store the refresh function globally for use by snapshot refresh
+    window.currentDetailRefreshAnalyzeButton = refreshAnalyzeButton;
     els.dAnalyze.onclick = async () => {
         const st = JOB_STATUS.states?.[id] || 'idle';
         if (st === 'running' || st === 'queued') {
@@ -1061,6 +1112,9 @@ document.getElementById("dClose").addEventListener("click", () => els.detailDlg.
 // Stop any active stream when dialog closes
 els.detailDlg.addEventListener('close', () => {
     if (currentDetailId) stopAnalysisStream(currentDetailId);
+    currentDetailId = null;
+    // Clean up global function reference
+    window.currentDetailRefreshAnalyzeButton = null;
 });
 els.runAllBtn.addEventListener("click", async () => {
     els.runAllBtn.disabled = true;
@@ -1133,13 +1187,19 @@ els.fabAdd.addEventListener("click", openNew);
                         }
                         const snapHost = document.getElementById('dSnapshot');
                         if (snapHost) snapHost.innerHTML = renderSnapshotTable(p);
-                        // analyze button state
-                        const btn = document.getElementById('dAnalyze');
-                        if (btn) {
-                            const st = JOB_STATUS.states?.[currentDetailId] || 'idle';
-                            if (st === 'running') btn.textContent = 'Stop';
-                            else if (st === 'queued') btn.textContent = 'Cancel from queue';
-                            else btn.textContent = 'Analyze (queue)';
+                        // analyze button state - call the proper refresh function if it exists
+                        if (window.currentDetailRefreshAnalyzeButton && typeof window.currentDetailRefreshAnalyzeButton === 'function') {
+                            window.currentDetailRefreshAnalyzeButton();
+                        } else {
+                            // Fallback to basic logic
+                            const btn = document.getElementById('dAnalyze');
+                            if (btn) {
+                                const st = JOB_STATUS.states?.[currentDetailId] || 'idle';
+                                if (st === 'running') btn.textContent = 'Stop';
+                                else if (st === 'queued') btn.textContent = 'Cancel from queue';
+                                else if (st === 'done') btn.textContent = 'Completed';
+                                else btn.textContent = 'Analyze (queue)';
+                            }
                         }
                     } catch {}
                 }

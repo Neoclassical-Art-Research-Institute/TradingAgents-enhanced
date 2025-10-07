@@ -28,8 +28,8 @@ DATA_FILE = os.path.join(DATA_DIR, "stocks.json")
 DATA_LOCK = threading.RLock()
 
 AUTO_REGEN_ENABLED = True
-# Approx daily close time: 1:00 PM PT (can drift for DST). We'll run 1:10 PM PT.
-DAILY_REGEN_HOUR = 13
+# Approx daily close time: 1:00 PM PT (can drift for DST). We'll run 2:10 PM PT.
+DAILY_REGEN_HOUR = 14
 DAILY_REGEN_MIN = 10
 
 # -------------------
@@ -185,6 +185,20 @@ def _set_state(pid: str, state: str):
             # clear stop flag once finished
             ev = STOP_FLAGS.get(pid)
             if ev: ev.clear()
+            # Update post with completion timestamp when done
+            if state == 'done':
+                def _set_completion_time(pp):
+                    ana = pp.get("analysis") or {}
+                    if not isinstance(ana, dict):
+                        ana = {}
+                    ana["completedAt"] = _utcnow_iso()
+                    ana["updatedAt"] = _utcnow_iso()
+                    pp["analysis"] = ana
+                    pp["updatedAt"] = _utcnow_iso()
+                try:
+                    _update_post(pid, _set_completion_time)
+                except Exception:
+                    pass  # Don't fail state update if post update fails
         # Emit event only for terminal states to reduce chatter
         if state in TERMINAL_STATES:
             evt = {"type": "state", "pid": pid, "state": state}
@@ -1205,24 +1219,34 @@ def job_worker_loop():
                 ana["report"] = ""
                 ana.setdefault("per_ticker", {})
                 ana["updatedAt"] = _utcnow_iso()
+                # Remove any stale completion timestamp
+                ana.pop("completedAt", None)
                 pp["analysis"] = ana
                 pp["updatedAt"] = _utcnow_iso()
             _update_post(pid, _clear_report)
         if not pid:
             time.sleep(0.2)
             continue
+        
+        job_completed_successfully = False
         try:
             perform_analysis(pid)
-            # set done unless stopped or error already set
-            st = JOB_STATE.get(pid)
-            if st not in ('stopped','error'):
-                _set_state(pid, 'done')
-        except Exception:
+            job_completed_successfully = True
+        except Exception as e:
+            print(f"Analysis failed for {pid}: {e}")
             _set_state(pid, 'error')
         finally:
+            # Always clear current job first
             with JOB_LOCK:
                 if CURRENT_JOB.get("pid") == pid:
                     CURRENT_JOB["pid"] = None
+            
+            # Set done state only if job completed successfully and wasn't stopped
+            if job_completed_successfully:
+                with JOB_LOCK:
+                    current_state = JOB_STATE.get(pid)
+                    if current_state not in ('stopped', 'error'):
+                        _set_state(pid, 'done')
 
 # Stock page route
 @app.route('/stock')
