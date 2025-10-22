@@ -260,14 +260,14 @@ def run_tradingagents_analysis(tickers: List[str], options: Dict[str, Any]) -> D
     # Import concrete API as per README
     try:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
-        from tradingagents.default_config import DEFAULT_CONFIG
+        from personal_config import PERSONAL_CONFIG
     except Exception as e:
         return {"summary": f"TradingAgents import error: {e}", "per_ticker": {t: {"suggestion": "Hold", "signals": {"error": str(e)}} for t in tickers}}
 
     opts = options or {}
     # Build config baseline
     try:
-        cfg = DEFAULT_CONFIG.copy()
+        cfg = PERSONAL_CONFIG.copy()
     except Exception:
         cfg = {}
     # Shallow-merge top-level known overrides
@@ -426,14 +426,14 @@ def perform_analysis(pid: str) -> None:
 
     try:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
-        from tradingagents.default_config import DEFAULT_CONFIG
+        from personal_config import PERSONAL_CONFIG
     except Exception as e:
         log_line(f"ERROR: {e}")
         _set_state(pid, 'error')
         return
 
     try:
-        cfg = DEFAULT_CONFIG.copy()
+        cfg = PERSONAL_CONFIG.copy()
     except Exception:
         cfg = {}
     for k in ["llm_provider", "deep_think_llm", "quick_think_llm", "backend_url", "online_tools", "max_debate_rounds", "project_dir"]:
@@ -929,7 +929,7 @@ def analyze_post_stream(pid):
         # Import TA and prepare config
         try:
             from tradingagents.graph.trading_graph import TradingAgentsGraph
-            from tradingagents.default_config import DEFAULT_CONFIG
+            from personal_config import PERSONAL_CONFIG
         except Exception as e:
             # Log error and finish
             def log_err(pp):
@@ -944,7 +944,7 @@ def analyze_post_stream(pid):
 
         cfg = None
         try:
-            cfg = DEFAULT_CONFIG.copy()
+            cfg = PERSONAL_CONFIG.copy()
         except Exception:
             cfg = {}
 

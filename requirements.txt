@@ -25,3 +25,5 @@ questionary
 langchain_anthropic
 langchain-google-genai
 google-genai
+langchain-deepseek
+deepseek
