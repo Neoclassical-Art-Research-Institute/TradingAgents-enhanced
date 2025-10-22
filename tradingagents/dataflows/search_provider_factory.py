@@ -8,7 +8,7 @@ import json
 
 
 class SearchProviderFactory:
-    _cache = {}  # 클래스 레벨 캐시
+    _cache = {}  # Cache to store created providers
     
     @staticmethod
     def create_provider(config: dict[str, any]) -> SearchProvider:
@@ -30,6 +30,10 @@ class SearchProviderFactory:
         # Create new instance
         backend_url = config["backend_url"]
         model = config["quick_think_llm"]
+
+        if  "deepseek" in backend_url: # Can DEEPSEEK even search Online? Lets just use backup for now
+            model = config[config["default_backup"]]["quick_think_llm"]
+            backend_url = config[config["default_backup"]]["backend_url"]
 
         if "generativelanguage.googleapis.com" in backend_url:
             provider = GoogleSearchProvider(model)

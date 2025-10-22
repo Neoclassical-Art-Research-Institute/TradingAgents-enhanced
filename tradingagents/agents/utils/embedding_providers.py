@@ -13,7 +13,6 @@ class EmbeddingProvider(ABC):
     def model_name(self)->str:
         pass
 
-
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     def __init__(self, backend_url: str, embedding_model: str = "text-embedding-3-small"):
         self.client = OpenAI(base_url=backend_url)

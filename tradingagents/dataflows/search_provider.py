@@ -17,20 +17,25 @@ class GoogleSearchProvider(SearchProvider):
         self.model = model
     
     def search(self, query: str) -> str:
-        google_search_tool = Tool(
+        # This implementation aligns with the official Google documentation for grounding.
+        
+        # 1. Create the Google Search tool.
+        grounding_tool = Tool(
             google_search=GoogleSearch()
         )
+        
+        # 2. Configure the generation to use the tool.
+        config = GenerateContentConfig(
+            tools=[grounding_tool]
+        )
 
+        # 3. Call the model with the content and the grounding configuration.
         response = self.client.models.generate_content(
             model=self.model,
             contents=query,
-            config=GenerateContentConfig(
-                tools=[google_search_tool],
-                response_modalities=["TEXT"]
-            )
+            config=config
         )
         
-
         result_text = ""
         for part in response.candidates[0].content.parts:
             if hasattr(part, 'text'):

@@ -7,10 +7,8 @@ from .yfin_utils import YFinanceUtils
 
 from .interface import (
     # News and sentiment functions
-    get_finnhub_news,
     get_finnhub_company_insider_sentiment,
     get_finnhub_company_insider_transactions,
-    get_google_news,
     get_reddit_global_news,
     get_reddit_company_news,
     # Financial statements functions
@@ -27,10 +25,8 @@ from .interface import (
 
 __all__ = [
     # News and sentiment functions
-    "get_finnhub_news",
     "get_finnhub_company_insider_sentiment",
     "get_finnhub_company_insider_transactions",
-    "get_google_news",
     "get_reddit_global_news",
     "get_reddit_company_news",
     # Financial statements functions

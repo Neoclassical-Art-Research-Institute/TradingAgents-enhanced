@@ -19,4 +19,16 @@ DEFAULT_CONFIG = {
     "max_recur_limit": 100,
     # Tool settings
     "online_tools": True,
+    "default_backup": "backup_openai",
+    # Backup LLM settings
+    "backup_google" : {
+        "deep_think_llm": "gemini-2.5-pro",
+        "quick_think_llm": "gemini-2.5-flash-lite-preview-06-17",
+        "backend_url": "https://generativelanguage.googleapis.com/v1beta",
+    },
+    "backup_openai" : {
+        "deep_think_llm": "o4-mini",
+        "quick_think_llm": "gpt-4o-mini",
+        "backend_url": "https://api.openai.com/v1",
+    }
 }

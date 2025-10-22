@@ -17,46 +17,7 @@ from .config import get_config, set_config, DATA_DIR
 from .search_provider_factory import SearchProviderFactory
 
 
-def get_finnhub_news(
-    ticker: Annotated[
-        str,
-        "Search query of a company's, e.g. 'AAPL, TSM, etc.",
-    ],
-    curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
-    look_back_days: Annotated[int, "how many days to look back"],
-):
-    """
-    Retrieve news about a company within a time frame
 
-    Args
-        ticker (str): ticker for the company you are interested in
-        start_date (str): Start date in yyyy-mm-dd format
-        end_date (str): End date in yyyy-mm-dd format
-    Returns
-        str: dataframe containing the news of the company in the time frame
-
-    """
-
-    start_date = datetime.strptime(curr_date, "%Y-%m-%d")
-    before = start_date - relativedelta(days=look_back_days)
-    before = before.strftime("%Y-%m-%d")
-
-    result = get_data_in_range(ticker, before, curr_date, "news_data", DATA_DIR)
-
-    if len(result) == 0:
-        return ""
-
-    combined_result = ""
-    for day, data in result.items():
-        if len(data) == 0:
-            continue
-        for entry in data:
-            current_news = (
-                "### " + entry["headline"] + f" ({day})" + "\n" + entry["summary"]
-            )
-            combined_result += current_news + "\n\n"
-
-    return f"## {ticker} News, from {before} to {curr_date}:\n" + str(combined_result)
 
 
 def get_finnhub_company_insider_sentiment(
@@ -283,30 +244,7 @@ def get_simfin_income_statements(
     )
 
 
-def get_google_news(
-    query: Annotated[str, "Query to search with"],
-    curr_date: Annotated[str, "Curr date in yyyy-mm-dd format"],
-    look_back_days: Annotated[int, "how many days to look back"],
-) -> str:
-    query = query.replace(" ", "+")
 
-    start_date = datetime.strptime(curr_date, "%Y-%m-%d")
-    before = start_date - relativedelta(days=look_back_days)
-    before = before.strftime("%Y-%m-%d")
-
-    news_results = getNewsData(query, before, curr_date)
-
-    news_str = ""
-
-    for news in news_results:
-        news_str += (
-            f"### {news['title']} (source: {news['source']}) \n\n{news['snippet']}\n\n"
-        )
-
-    if len(news_results) == 0:
-        return ""
-
-    return f"## {query} Google News, from {before} to {curr_date}:\n\n{news_str}"
 
 
 def get_reddit_global_news(
@@ -363,61 +301,32 @@ def get_reddit_global_news(
 
 def get_reddit_company_news(
     ticker: Annotated[str, "ticker symbol of the company"],
-    start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
+    start_date: Annotated[str, "End date of search in yyyy-mm-dd format"],
     look_back_days: Annotated[int, "how many days to look back"],
-    max_limit_per_day: Annotated[int, "Maximum number of news per day"],
 ) -> str:
     """
-    Retrieve the latest top reddit news
+    Retrieve the latest top reddit news for a company using web search.
     Args:
         ticker: ticker symbol of the company
-        start_date: Start date in yyyy-mm-dd format
-        end_date: End date in yyyy-mm-dd format
+        start_date: End date of search in yyyy-mm-dd format
+        look_back_days: how many days to look back from the end date
     Returns:
-        str: A formatted dataframe containing the latest news articles posts on reddit and meta information in these columns: "created_utc", "id", "title", "selftext", "score", "num_comments", "url"
+        str: A formatted string containing the latest news about the company on Reddit.
     """
+    config = get_config()
+    search_provider = SearchProviderFactory.create_provider(config)
 
-    start_date = datetime.strptime(start_date, "%Y-%m-%d")
-    before = start_date - relativedelta(days=look_back_days)
-    before = before.strftime("%Y-%m-%d")
+    end_date = datetime.strptime(start_date, "%Y-%m-%d")
+    start_date_obj = end_date - relativedelta(days=look_back_days)
 
-    posts = []
-    # iterate from start_date to end_date
-    curr_date = datetime.strptime(before, "%Y-%m-%d")
+    query = f'site:reddit.com "{ticker}" stock discussions after:{start_date_obj.strftime("%Y-%m-%d")} before:{end_date.strftime("%Y-%m-%d")}'
 
-    total_iterations = (start_date - curr_date).days + 1
-    pbar = tqdm(
-        desc=f"Getting Company News for {ticker} on {start_date}",
-        total=total_iterations,
-    )
+    search_results = search_provider.search(query)
 
-    while curr_date <= start_date:
-        curr_date_str = curr_date.strftime("%Y-%m-%d")
-        fetch_result = fetch_top_from_category(
-            "company_news",
-            curr_date_str,
-            max_limit_per_day,
-            ticker,
-            data_path=os.path.join(DATA_DIR, "reddit_data"),
-        )
-        posts.extend(fetch_result)
-        curr_date += relativedelta(days=1)
+    if not search_results or search_results == "":
+        return f"No Reddit discussions found for {ticker} from {start_date_obj.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}."
 
-        pbar.update(1)
-
-    pbar.close()
-
-    if len(posts) == 0:
-        return ""
-
-    news_str = ""
-    for post in posts:
-        if post["content"] == "":
-            news_str += f"### {post['title']}\n\n"
-        else:
-            news_str += f"### {post['title']}\n\n{post['content']}\n\n"
-
-    return f"##{ticker} News Reddit, from {before} to {curr_date}:\n\n{news_str}"
+    return f"## {ticker} Reddit discussions from {start_date_obj.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}:\n\n{search_results}"
 
 
 def get_stock_stats_indicators_window(
@@ -706,8 +615,39 @@ def get_YFin_data(
 def get_stock_news(ticker, curr_date):
     config = get_config()
     search_provider = SearchProviderFactory.create_provider(config)
-    query = f"Can you search Social Media for {ticker} from 7 days before {curr_date} to {curr_date}? Make sure you only get the data posted during that period."
+    query = f"Search for the latest news, developments, and announcements for {ticker} from 7 days before {curr_date} to {curr_date}. Focus on earnings, product launches, partnerships, and any market-moving information."
     return search_provider.search(query)
+
+
+def get_twitter_stock_info(
+    ticker: Annotated[str, "ticker symbol of the company"],
+    start_date: Annotated[str, "End date of search in yyyy-mm-dd format"],
+    look_back_days: Annotated[int, "how many days to look back"],
+) -> str:
+    """
+    Retrieve the latest top twitter/x posts for a company using web search.
+    Args:
+        ticker: ticker symbol of the company
+        start_date: End date of search in yyyy-mm-dd format
+        look_back_days: how many days to look back from the end date
+    Returns:
+        str: A formatted string containing the latest posts about the company on twitter/x.
+    """
+    config = get_config()
+    search_provider = SearchProviderFactory.create_provider(config)
+
+    end_date = datetime.strptime(start_date, "%Y-%m-%d")
+    start_date_obj = end_date - relativedelta(days=look_back_days)
+
+    # Using x.com for twitter
+    query = f'site:x.com "${ticker}" stock discussions after:{start_date_obj.strftime("%Y-%m-%d")} before:{end_date.strftime("%Y-%m-%d")}'
+
+    search_results = search_provider.search(query)
+
+    if not search_results or search_results == "":
+        return f"No Twitter/X discussions found for {ticker} from {start_date_obj.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}."
+
+    return f"## {ticker} Twitter/X discussions from {start_date_obj.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}:\n\n{search_results}"
     
 
 
@@ -722,6 +662,6 @@ def get_global_news(curr_date):
 def get_fundamentals(ticker, curr_date):
     config = get_config()
     search_provider = SearchProviderFactory.create_provider(config)
-    query = f"Search for fundamental analysis data and financial metrics for {ticker} stock from the month before {curr_date} to the month of {curr_date}. Look for earnings reports, financial ratios like PE, PS, cash flow, revenue growth, analyst ratings, and any fundamental analysis discussions. Please present key metrics in a structured format."
+    query = f"Provide a summary of the fundamental analysis for {ticker} stock, using data from the month before {curr_date} up to {curr_date}. The summary should include key financial metrics such as P/E ratio, P/S ratio, cash flow, revenue growth, and a synopsis of recent analyst ratings. Present the key metrics in a structured Markdown table."
     return search_provider.search(query)
     
