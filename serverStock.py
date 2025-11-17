@@ -24,6 +24,8 @@ except Exception:
 APP_TZ = ZoneInfo("America/Los_Angeles")  # market-close scheduler
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+REPORTS_DIR = os.path.join(DATA_DIR, "reports")
+os.makedirs(REPORTS_DIR, exist_ok=True)
 DATA_FILE = os.path.join(DATA_DIR, "stocks.json")
 DATA_LOCK = threading.RLock()
 
@@ -147,6 +149,57 @@ def _write(obj: List[Dict[str, Any]]):
 
 def _utcnow_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+def _write_report_file(pid: str, ticker: str, content: str) -> str:
+    """Write report content to a markdown file and return the filename."""
+    # Sanitize ticker for filename
+    safe_ticker = "".join(c for c in ticker if c.isalnum() or c in ('-', '_')).upper()
+    filename = f"{safe_ticker}.md"
+    filepath = os.path.join(REPORTS_DIR, filename)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return filename
+    except Exception as e:
+        print(f"[report-file] Failed to write {filepath}: {e}")
+        return filename  # return filename anyway so JSON doesn't break
+
+def _read_report_file(filename: str) -> str:
+    """Read report content from a markdown file."""
+    filepath = os.path.join(REPORTS_DIR, filename)
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"[report-file] Failed to read {filepath}: {e}")
+        return f"[Error reading report file: {filename}]"
+
+def _append_to_report_file(pid: str, ticker: str, content: str) -> str:
+    """Append content to an existing report file or create it. Returns filename."""
+    safe_ticker = "".join(c for c in ticker if c.isalnum() or c in ('-', '_')).upper()
+    filename = f"{safe_ticker}.md"
+    filepath = os.path.join(REPORTS_DIR, filename)
+    try:
+        with open(filepath, "a", encoding="utf-8") as f:
+            f.write(content)
+        return filename
+    except Exception as e:
+        print(f"[report-file] Failed to append to {filepath}: {e}")
+        return filename
+
+def _get_compiled_report(report_files: List[str]) -> str:
+    """Compile multiple report files into a single string."""
+    if not report_files:
+        return ""
+    if isinstance(report_files, str):
+        # Handle old format where report was a string
+        return report_files
+    
+    compiled = []
+    for filename in report_files:
+        content = _read_report_file(filename)
+        compiled.append(content)
+    return "\n\n".join(compiled)
 
 def _find(posts, pid):
     for p in posts:
@@ -409,7 +462,10 @@ def perform_analysis(pid: str) -> None:
         if not isinstance(ana, dict):
             ana = {}
         if "report" not in ana:
-            ana["report"] = ""
+            ana["report"] = []  # Initialize as array for report filenames
+        elif isinstance(ana["report"], str):
+            # Migration: if old string format exists, keep it for now but mark for conversion
+            pass
         if "per_ticker" not in ana:
             ana["per_ticker"] = {}
         ana["updatedAt"] = _utcnow_iso()
@@ -419,8 +475,18 @@ def perform_analysis(pid: str) -> None:
         wrapped = _wrap_text(msg)
         def m(pp):
             init_analysis(pp)
-            rep = pp["analysis"].get("report", "")
-            pp["analysis"]["report"] = rep + ("\n" if rep else "") + wrapped
+            # Get primary ticker for this analysis (use first ticker as default)
+            primary_ticker = tickers[0] if tickers else "REPORT"
+            # Append to report file
+            filename = _append_to_report_file(pid, primary_ticker, wrapped + "\n")
+            # Update report files array if needed
+            report_files = pp["analysis"].get("report", [])
+            if isinstance(report_files, str):
+                # Old format - convert to array
+                report_files = []
+            if filename not in report_files:
+                report_files.append(filename)
+            pp["analysis"]["report"] = report_files
             pp["analysis"]["updatedAt"] = _utcnow_iso()
         _update_post(pid, m)
 
@@ -578,7 +644,18 @@ def api_config():
 
 @app.get("/api/stocks")
 def list_posts():
-    return jsonify(_read())
+    posts = _read()
+    # Compile report files for each post and replace array with string content
+    for p in posts:
+        ana = p.get("analysis")
+        if ana and isinstance(ana, dict):
+            report_files = ana.get("report", [])
+            if isinstance(report_files, list) and report_files:
+                # Replace the array with compiled string content for frontend
+                ana["report"] = _get_compiled_report(report_files)
+            elif not isinstance(report_files, str):
+                ana["report"] = ""
+    return jsonify(posts)
 
 @app.get("/api/stocks/<pid>")
 def get_post(pid):
@@ -586,6 +663,17 @@ def get_post(pid):
     p = _find(posts, pid)
     if not p:
         return jsonify({"message": "Not found"}), 404
+    
+    # Compile report files into full text and replace array with string for frontend
+    ana = p.get("analysis")
+    if ana and isinstance(ana, dict):
+        report_files = ana.get("report", [])
+        if isinstance(report_files, list) and report_files:
+            # Replace the array with compiled string content for frontend
+            ana["report"] = _get_compiled_report(report_files)
+        elif not isinstance(report_files, str):
+            ana["report"] = ""
+    
     return jsonify(p)
 
 @app.post("/api/stocks/reorder")
@@ -662,7 +750,9 @@ def summarize_post(pid):
 
     analysis = p.get("analysis") or {}
     per = analysis.get("per_ticker") or {}
-    report_text = (analysis.get("report") or "")
+    # Compile report files into text for parsing
+    report_files = analysis.get("report", [])
+    report_text = _get_compiled_report(report_files) if isinstance(report_files, list) else (report_files if isinstance(report_files, str) else "")
     opts = p.get("options") or {}
     date_str = (opts.get("date") or datetime.now(APP_TZ).date().isoformat())
 
@@ -700,6 +790,16 @@ def summarize_post(pid):
         p["analysis"]["updatedAt"] = _utcnow_iso()
         p["updatedAt"] = _utcnow_iso()
         _write(posts)
+    
+    # Compile report files and replace array with string for frontend response
+    ana = p.get("analysis")
+    if ana and isinstance(ana, dict):
+        report_files = ana.get("report", [])
+        if isinstance(report_files, list) and report_files:
+            ana["report"] = _get_compiled_report(report_files)
+        elif not isinstance(report_files, str):
+            ana["report"] = ""
+    
     return jsonify(p)
 
 @app.put("/api/stocks/<pid>")
@@ -795,7 +895,17 @@ def enqueue_post(pid):
                     ana.setdefault("per_ticker", {})
                     # If this is a fresh enqueue (was not previously queued/running), clear the report immediately
                     if newly_added:
-                        ana["report"] = ""
+                        # Clear old report files
+                        old_report_files = ana.get("report", [])
+                        if isinstance(old_report_files, list):
+                            for filename in old_report_files:
+                                try:
+                                    filepath = os.path.join(REPORTS_DIR, filename)
+                                    if os.path.exists(filepath):
+                                        os.remove(filepath)
+                                except Exception:
+                                    pass
+                        ana["report"] = []
                         # Optional: could also clear summary; leaving summary intact until new one generated
                     pp["analysis"] = ana
             _update_post(pid, _prep)
@@ -917,7 +1027,10 @@ def analyze_post_stream(pid):
             if not isinstance(ana, dict):
                 ana = {}
             if "report" not in ana:
-                ana["report"] = ""
+                ana["report"] = []  # Initialize as array for report filenames
+            elif isinstance(ana["report"], str):
+                # Migration: if old string format exists, keep it for now
+                pass
             if "per_ticker" not in ana:
                 ana["per_ticker"] = {}
             ana["updatedAt"] = _utcnow_iso()
@@ -934,9 +1047,14 @@ def analyze_post_stream(pid):
             # Log error and finish
             def log_err(pp):
                 init_analysis(pp)
-                rep = pp["analysis"].get("report", "")
-                rep = rep + ("\n" if rep else "") + _wrap_text(f"ERROR: {e}")
-                pp["analysis"]["report"] = rep
+                primary_ticker = tickers[0] if tickers else "ERROR"
+                filename = _write_report_file(pid, primary_ticker, _wrap_text(f"ERROR: {e}"))
+                report_files = pp["analysis"].get("report", [])
+                if isinstance(report_files, str):
+                    report_files = []
+                if filename not in report_files:
+                    report_files.append(filename)
+                pp["analysis"]["report"] = report_files
                 pp["analysis"]["updatedAt"] = _utcnow_iso()
             _update_post(pid, log_err)
             yield _sse({"type": "error", "message": f"TradingAgents import error: {e}"})
@@ -963,8 +1081,15 @@ def analyze_post_stream(pid):
             wrapped = _wrap_text(msg)
             def m(pp):
                 init_analysis(pp)
-                rep = pp["analysis"].get("report", "")
-                pp["analysis"]["report"] = rep + ("\n" if rep else "") + wrapped
+                # Use first ticker as primary for the report file
+                primary_ticker = tickers[0] if tickers else "REPORT"
+                filename = _append_to_report_file(pid, primary_ticker, wrapped + "\n")
+                report_files = pp["analysis"].get("report", [])
+                if isinstance(report_files, str):
+                    report_files = []
+                if filename not in report_files:
+                    report_files.append(filename)
+                pp["analysis"]["report"] = report_files
                 pp["analysis"]["updatedAt"] = _utcnow_iso()
             _update_post(pid, m)
 
@@ -1216,7 +1341,17 @@ def job_worker_loop():
                 ana = pp.get("analysis") or {}
                 if not isinstance(ana, dict):
                     ana = {}
-                ana["report"] = ""
+                # Clear old report files
+                old_report_files = ana.get("report", [])
+                if isinstance(old_report_files, list):
+                    for filename in old_report_files:
+                        try:
+                            filepath = os.path.join(REPORTS_DIR, filename)
+                            if os.path.exists(filepath):
+                                os.remove(filepath)
+                        except Exception:
+                            pass
+                ana["report"] = []  # Reset to empty array
                 ana.setdefault("per_ticker", {})
                 ana["updatedAt"] = _utcnow_iso()
                 # Remove any stale completion timestamp
