@@ -1,12 +1,13 @@
 <!doctype html>
 <html lang="en">
-
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>📈 TradingAgents Watch</title>
+    <title>TradingAgents Watch</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
     <script>
-        // Dynamically load CSS from /static when served, or from ../static when opened standalone
         (function(){
             var hasServer = location.protocol === 'http:' || location.protocol === 'https:';
             var STATIC_BASE = hasServer ? '/static/' : '../static/';
@@ -17,7 +18,15 @@
         })();
     </script>
     <script>
-        // Load tiny Markdown renderer and sanitizer when served over http(s)
+        (function(){
+            try {
+                if (window.localStorage && localStorage.getItem('stock:heroDismissed') === '1') {
+                    document.documentElement.classList.add('hero-dismissed');
+                }
+            } catch {}
+        })();
+    </script>
+    <script>
         (function(){
             var hasServer = location.protocol === 'http:' || location.protocol === 'https:';
             if (!hasServer) return;
@@ -34,79 +43,217 @@
         })();
     </script>
 </head>
-
 <body>
     <header>
         <div class="bar">
             <div class="brandWrap">
-                <div class="brand">📈 TradingAgents Watch</div>
-                <div class="sub">Post baskets of tickers, auto-analyze with TradingAgents, and review daily</div>
+                <div class="eyebrow">Research dashboard</div>
+                <div class="brand">TradingAgents Watch</div>
+                <div class="sub">Track conviction, refresh live prices, and queue deeper multi-agent research without living in raw JSON.</div>
             </div>
             <div class="headActions">
                 <div class="searchWrap">
-                    <input id="searchBox" type="text" placeholder="Search title / tickers / description…" />
+                    <input id="searchBox" type="text" placeholder="Search watchlists, tickers, or notes" />
                 </div>
-                <div class="btnRow">
-                    <span class="pill" id="serverState">…</span>
-                    <button id="runAllBtn" class="ghost">Run All Analyses</button>
+                <div class="headerStatusRow">
+                    <span class="pill" id="serverState">Connecting...</span>
                 </div>
             </div>
         </div>
     </header>
 
-    <main>
-        <section id="feed" class="feed"></section>
+    <main class="pageShell">
+        <section id="heroSection" class="hero">
+            <div class="heroCopy">
+                <button id="heroDismissBtn" class="ghost heroDismissBtn" type="button" aria-label="Dismiss intro">Dismiss</button>
+                <div class="heroKicker">Smoother daily workflow</div>
+                <h1>Turn watchlists into repeatable TradingAgents runs.</h1>
+                <p id="serverNotice" class="heroNote">Checking server capabilities and default model setup...</p>
+                <div class="heroActions">
+                    <button id="heroAddBtn" class="primary">Create Watchlist</button>
+                    <button id="heroRunBtn" class="ghost">Queue All Ready Lists</button>
+                </div>
+            </div>
+            <aside class="heroPanel" aria-label="How this page works">
+                <div class="heroPanelHead">
+                    <strong>Workflow</strong>
+                    <span class="muted">Fast path first, advanced overrides when needed.</span>
+                </div>
+                <div class="heroSteps">
+                    <div class="stepCard">
+                        <span>1</span>
+                        <div>
+                            <strong>Define the basket</strong>
+                            <p>Add tickers, your thesis, and optional cost basis.</p>
+                        </div>
+                    </div>
+                    <div class="stepCard">
+                        <span>2</span>
+                        <div>
+                            <strong>Choose a preset</strong>
+                            <p>Fast, balanced, or deeper analyst coverage without hand-editing config.</p>
+                        </div>
+                    </div>
+                    <div class="stepCard">
+                        <span>3</span>
+                        <div>
+                            <strong>Review the run</strong>
+                            <p>Watch price movement, queue state, summaries, and the full report in one place.</p>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </section>
+
+        <section id="overviewCards" class="overviewCards" aria-label="Portfolio overview"></section>
+
+        <section class="feedShell">
+            <div class="sectionHead">
+                <div class="sectionHeadMain">
+                    <h2>Watchlists</h2>
+                    <p id="feedMeta" class="sectionNote">Loading watchlists...</p>
+                </div>
+                <div class="sectionHeadAside">
+                    <div class="watchlistPanelActions">
+                        <button id="resetOrderBtn" class="ghost" type="button" title="Switch back to timestamp sorting">Reset Order</button>
+                        <button id="heroToggleBtn" class="ghost" type="button" title="Show the intro panel again">Show Intro</button>
+                    </div>
+                    <div class="legend" aria-label="Suggestion legend">
+                        <span class="legendItem"><span class="legendDot buy"></span>Buy</span>
+                        <span class="legendItem"><span class="legendDot hold"></span>Hold</span>                        <span class="legendItem"><span class="legendDot sell"></span>Sell</span>
+                    </div>
+                </div>
+            </div>
+            <section id="feed" class="feed"></section>
+        </section>
     </main>
 
-    <!-- Floating Action Button (+) -->
-    <button id="fabAdd" class="fab" title="New Post" aria-label="New Post">+</button>
+    <div id="fabDock" class="fabDock" aria-label="Quick actions">
+        <div id="fabPanel" class="fabPanel" aria-hidden="true">
+            <button id="fabRefreshBtn" class="fabAction ghost" type="button" data-fab-action="refresh">Refresh Prices</button>
+            <button id="fabQueueBtn" class="fabAction primary" type="button" data-fab-action="queue">Queue All</button>
+            <button id="fabNewBtn" class="fabAction ghost" type="button" data-fab-action="new">New Watchlist</button>
+        </div>
+        <button id="fabAdd" class="fab fabCore" title="Open quick actions" aria-label="Open quick actions" aria-controls="fabPanel" aria-expanded="false" aria-haspopup="true">+</button>
+    </div>
 
     <dialog id="postDlg">
-        <div class="modal">
-            <header><strong id="dlgTitle">New Post</strong></header>
+        <div class="modal modal-wide">
+            <header class="dialogHead">
+                <div>
+                    <strong id="dlgTitle">New Watchlist</strong>
+                    <div class="muted">Use the preset controls for the common workflow. Raw overrides stay optional.</div>
+                </div>
+            </header>
             <div class="content">
-                <div class="rowgrid">
-                    <div class="row">
-                        <label>Title</label>
-                        <input id="pTitle" type="text" placeholder="e.g., Tech Growth Basket" />
+                <section class="formSection">
+                    <div class="formSectionHead">Basket</div>
+                    <div class="rowgrid">
+                        <div class="row">
+                            <label>Title</label>
+                            <input id="pTitle" type="text" placeholder="Semis momentum basket" />
+                        </div>
+                        <div class="row">
+                            <label>Tickers</label>
+                            <input id="pTickers" type="text" placeholder="NVDA, AMD, TSM" />
+                        </div>
                     </div>
                     <div class="row">
-                        <label>Tickers (comma-separated)</label>
-                        <input id="pTickers" type="text" placeholder="AAPL, MSFT, NVDA" />
+                        <label>Thesis / notes</label>
+                        <textarea id="pDesc" placeholder="Why this basket matters, what you want TradingAgents to pressure-test, and any context worth preserving."></textarea>
                     </div>
-                </div>
-                <div class="row">
-                    <label>Description</label>
-                    <textarea id="pDesc" placeholder="Notes / thesis for this basket"></textarea>
-                </div>
-                <div class="row">
-                    <label>Purchase Prices (optional)</label>
-                    <div class="muted">Add per-ticker prices like <code>AAPL=182.50, MSFT=410</code> — leave blank if
-                        unknown.</div>
-                    <input id="pPurchases" type="text" placeholder="AAPL=182.50, MSFT=410" />
-                </div>
-                <div class="row">
-                    <label>TradingAgents Options (JSON)</label>
-                    <textarea id="pOptions" placeholder='{"indicators":["rsi","macd"],"window":90}'></textarea>
-                </div>
+                    <div class="row">
+                        <label>Purchase prices</label>
+                        <div class="muted">Optional. Use pairs like AAPL=182.50, MSFT=410 to calculate gain/loss alongside the recommendation.</div>
+                        <input id="pPurchases" type="text" placeholder="NVDA=903.5, AMD=174.2" />
+                    </div>
+                </section>
+
+                <section class="formSection">
+                    <div class="formSectionHead">TradingAgents setup</div>
+                    <div class="presetGrid">
+                        <label class="presetCard">
+                            <input type="radio" name="analysisPreset" value="fast" />
+                            <span class="presetName">Fast Pass</span>
+                            <span class="presetDesc">Quick directional read with lighter analyst coverage.</span>
+                        </label>
+                        <label class="presetCard">
+                            <input type="radio" name="analysisPreset" value="balanced" checked />
+                            <span class="presetName">Balanced</span>
+                            <span class="presetDesc">Default TradingAgents workflow for day-to-day review.</span>
+                        </label>
+                        <label class="presetCard">
+                            <input type="radio" name="analysisPreset" value="deep" />
+                            <span class="presetName">Deep Dive</span>
+                            <span class="presetDesc">Full coverage with more debate depth before a decision.</span>
+                        </label>
+                    </div>
+
+                    <div class="rowgrid rowgrid-three">
+                        <div class="row">
+                            <label>Analysis date</label>
+                            <input id="pDate" type="date" />
+                        </div>
+                        <div class="row">
+                            <label>Debate rounds</label>
+                            <input id="pRounds" type="number" min="1" max="4" step="1" value="1" />
+                        </div>
+                        <div class="toggleStack">
+                            <label class="toggleTile">
+                                <input id="pOnlineTools" type="checkbox" checked />
+                                <span>
+                                    <strong>Use online tools</strong>
+                                    <small>Prefer live data sources when available.</small>
+                                </span>
+                            </label>
+                            <label class="toggleTile">
+                                <input id="pDebug" type="checkbox" />
+                                <span>
+                                    <strong>Verbose logs</strong>
+                                    <small>Keep more reasoning detail in the report.</small>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <label>Analyst coverage</label>
+                        <div class="analystGrid">
+                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="market" checked />Market</label>
+                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="social" checked />Social</label>
+                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="news" checked />News</label>
+                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="fundamentals" checked />Fundamentals</label>
+                        </div>
+                    </div>
+
+                    <details class="advancedBlock">
+                        <summary>Advanced overrides</summary>
+                        <div class="muted">Optional JSON merged into the request. Structured fields above win if the same key appears twice.</div>
+                        <textarea id="pOptions" placeholder='{"config":{"quick_think_llm":"gpt-4.1-mini"}}'></textarea>
+                    </details>
+                </section>
             </div>
             <div class="actions">
                 <button class="ghost" id="cancelDlg">Cancel</button>
-                <button id="saveDlg" class="primary">Save</button>
+                <button id="saveDlg" class="primary">Save Watchlist</button>
             </div>
         </div>
     </dialog>
 
     <dialog id="detailDlg">
-        <div class="modal">
-            <header style="display:flex;align-items:center;gap:10px;justify-content:space-between">
-                <strong id="dTitle">Post</strong>
-                <button id="dClose" class="ghost" title="Close" aria-label="Close" style="font-weight:700">×</button>
+        <div class="modal modal-detail">
+            <header class="dialogHead dialogHead-split">
+                <div>
+                    <strong id="dTitle">Watchlist</strong>
+                    <div id="dSubtitle" class="muted">Review pricing, queue status, and the latest TradingAgents output.</div>
+                </div>
+                <button id="dClose" class="ghost closeBtn" title="Close" aria-label="Close">x</button>
             </header>
             <div class="content" id="dContent"></div>
             <div class="actions">
                 <button id="dEdit">Edit</button>
                 <button id="dDelete" class="danger">Delete</button>
+                <button id="dRefresh" class="ghost">Refresh Prices</button>
                 <button id="dAnalyze" class="primary">Analyze</button>
             </div>
         </div>
@@ -122,5 +269,4 @@
         })();
     </script>
 </body>
-
 </html>

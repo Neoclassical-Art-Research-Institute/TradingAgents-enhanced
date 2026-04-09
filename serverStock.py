@@ -34,6 +34,39 @@ AUTO_REGEN_ENABLED = True
 DAILY_REGEN_HOUR = 14
 DAILY_REGEN_MIN = 10
 
+SUPPORTED_ANALYSTS = ["market", "social", "news", "fundamentals"]
+ANALYST_LABELS = {
+    "market": "Market",
+    "social": "Social",
+    "news": "News",
+    "fundamentals": "Fundamentals",
+}
+DEFAULT_ANALYSIS_PRESET = "balanced"
+ANALYSIS_PRESETS: Dict[str, Dict[str, Any]] = {
+    "fast": {
+        "label": "Fast Pass",
+        "description": "Quick directional read with lighter analyst coverage.",
+        "selected_analysts": ["market", "news", "fundamentals"],
+        "online_tools": True,
+        "max_debate_rounds": 1,
+    },
+    "balanced": {
+        "label": "Balanced",
+        "description": "Default full TradingAgents workflow for daily monitoring.",
+        "selected_analysts": ["market", "social", "news", "fundamentals"],
+        "online_tools": True,
+        "max_debate_rounds": 1,
+    },
+    "deep": {
+        "label": "Deep Dive",
+        "description": "Full analyst coverage with extra debate depth.",
+        "selected_analysts": ["market", "social", "news", "fundamentals"],
+        "online_tools": True,
+        "max_debate_rounds": 2,
+    },
+}
+UNSET = object()
+
 # -------------------
 # App
 # -------------------
@@ -150,11 +183,239 @@ def _write(obj: List[Dict[str, Any]]):
 def _utcnow_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return default if value is None else bool(value)
+
+def _coerce_int(value: Any, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        result = int(value)
+    except Exception:
+        result = default
+    if minimum is not None:
+        result = max(minimum, result)
+    if maximum is not None:
+        result = min(maximum, result)
+    return result
+
+def _normalize_tickers(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = raw.replace("\n", ",").split(",")
+    else:
+        try:
+            items = list(raw)
+        except TypeError:
+            items = [raw]
+    tickers: List[str] = []
+    seen = set()
+    for item in items:
+        ticker = str(item or "").strip().upper()
+        if not ticker or ticker in seen:
+            continue
+        tickers.append(ticker)
+        seen.add(ticker)
+    return tickers
+
+def _normalize_purchases(raw: Any, tickers: List[str]) -> Dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    allowed = set(tickers)
+    purchases: Dict[str, float] = {}
+    for key, value in raw.items():
+        ticker = str(key or "").strip().upper()
+        if not ticker or (allowed and ticker not in allowed):
+            continue
+        try:
+            price = round(float(value), 4)
+        except Exception:
+            continue
+        if price <= 0:
+            continue
+        purchases[ticker] = price
+    return purchases
+
+def _sanitize_date(raw: Any) -> str | None:
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10]).date().isoformat()
+    except Exception:
+        return None
+
+def _normalize_selected_analysts(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = raw.replace("\n", ",").split(",")
+    else:
+        try:
+            items = list(raw)
+        except TypeError:
+            items = [raw]
+    analysts: List[str] = []
+    seen = set()
+    for item in items:
+        analyst = str(item or "").strip().lower()
+        if analyst not in SUPPORTED_ANALYSTS or analyst in seen:
+            continue
+        analysts.append(analyst)
+        seen.add(analyst)
+    return analysts
+
+def _default_title_for_tickers(tickers: List[str]) -> str:
+    if not tickers:
+        return "Untitled"
+    head = " / ".join(tickers[:3])
+    if len(tickers) > 3:
+        head += f" +{len(tickers) - 3}"
+    return f"{head} watchlist"
+
+def _normalize_options(raw: Any) -> Dict[str, Any]:
+    options = dict(raw) if isinstance(raw, dict) else {}
+    preset = str(options.get("preset") or DEFAULT_ANALYSIS_PRESET).strip().lower()
+    if preset not in ANALYSIS_PRESETS:
+        preset = DEFAULT_ANALYSIS_PRESET
+    preset_defaults = ANALYSIS_PRESETS[preset]
+
+    selected_analysts = _normalize_selected_analysts(options.get("selected_analysts"))
+    if not selected_analysts:
+        selected_analysts = list(preset_defaults["selected_analysts"])
+
+    normalized: Dict[str, Any] = {
+        "preset": preset,
+        "selected_analysts": selected_analysts,
+        "debug": _coerce_bool(options.get("debug"), False),
+        "online_tools": _coerce_bool(options.get("online_tools"), preset_defaults["online_tools"]),
+        "max_debate_rounds": _coerce_int(
+            options.get("max_debate_rounds"),
+            preset_defaults["max_debate_rounds"],
+            minimum=1,
+            maximum=4,
+        ),
+    }
+
+    date_str = _sanitize_date(options.get("date"))
+    if date_str:
+        normalized["date"] = date_str
+
+    for key in [
+        "llm_provider",
+        "deep_think_llm",
+        "quick_think_llm",
+        "backend_url",
+        "project_dir",
+    ]:
+        value = options.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        normalized[key] = value
+
+    config = options.get("config")
+    normalized["config"] = dict(config) if isinstance(config, dict) else {}
+    return normalized
+
+def _resolve_analysis_settings(raw_options: Any) -> Dict[str, Any]:
+    opts = _normalize_options(raw_options)
+    preset = ANALYSIS_PRESETS.get(opts["preset"], ANALYSIS_PRESETS[DEFAULT_ANALYSIS_PRESET])
+    cfg = _get_personal_config_copy()
+
+    if opts.get("config"):
+        cfg.update(opts["config"])
+
+    cfg["online_tools"] = opts["online_tools"]
+    cfg["max_debate_rounds"] = opts["max_debate_rounds"]
+    if "max_risk_discuss_rounds" not in cfg:
+        cfg["max_risk_discuss_rounds"] = max(1, min(opts["max_debate_rounds"], 4))
+
+    for key in ["llm_provider", "deep_think_llm", "quick_think_llm", "backend_url", "project_dir"]:
+        if key in opts:
+            cfg[key] = opts[key]
+
+    return {
+        "options": opts,
+        "config": cfg,
+        "selected_analysts": opts.get("selected_analysts") or list(preset["selected_analysts"]),
+        "debug": bool(opts.get("debug", False)),
+        "date": opts.get("date") or datetime.now(APP_TZ).date().isoformat(),
+    }
+
+def _normalize_post_for_storage(payload: Dict[str, Any], existing: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    existing = existing or {}
+    tickers = _normalize_tickers(payload.get("tickers") if "tickers" in payload else existing.get("tickers"))
+    title = str((payload.get("title") if "title" in payload else existing.get("title")) or "").strip()
+    description = str((payload.get("description") if "description" in payload else existing.get("description")) or "").strip()
+    options = _normalize_options(payload.get("options") if "options" in payload else existing.get("options") or {})
+
+    if "purchases" in payload:
+        purchases = _normalize_purchases(payload.get("purchases"), tickers)
+    else:
+        purchases = _normalize_purchases(existing.get("purchases") or {}, tickers)
+
+    return {
+        "title": title or _default_title_for_tickers(tickers),
+        "description": description,
+        "tickers": tickers,
+        "options": options,
+        "purchases": purchases,
+    }
+
+def _get_personal_config_copy() -> Dict[str, Any]:
+    try:
+        from personal_config import PERSONAL_CONFIG
+        if isinstance(PERSONAL_CONFIG, dict):
+            return PERSONAL_CONFIG.copy()
+    except Exception:
+        pass
+    return {}
+
+def _get_personal_config_summary() -> Dict[str, Any]:
+    cfg = _get_personal_config_copy()
+    return {
+        "llm_provider": cfg.get("llm_provider"),
+        "deep_think_llm": cfg.get("deep_think_llm"),
+        "quick_think_llm": cfg.get("quick_think_llm"),
+        "online_tools": cfg.get("online_tools"),
+    }
+
+def _normalize_post_for_client(post: Dict[str, Any]) -> Dict[str, Any]:
+    post["options"] = _normalize_options(post.get("options") or {})
+    ana = post.get("analysis")
+    if ana and isinstance(ana, dict):
+        report_files = ana.get("report", [])
+        if isinstance(report_files, list) and report_files:
+            ana["report"] = _get_compiled_report(report_files)
+        elif not isinstance(report_files, str):
+            ana["report"] = ""
+    return post
+
+def _report_filename(pid: str, ticker: str | None = None) -> str:
+    safe_pid = "".join(c for c in str(pid) if c.isalnum()).lower()[:12] or "post"
+    safe_ticker = "".join(c for c in str(ticker or "report") if c.isalnum() or c in ("-", "_")).upper() or "REPORT"
+    return f"{safe_ticker}-{safe_pid}.md"
+
 def _write_report_file(pid: str, ticker: str, content: str) -> str:
     """Write report content to a markdown file and return the filename."""
-    # Sanitize ticker for filename
-    safe_ticker = "".join(c for c in ticker if c.isalnum() or c in ('-', '_')).upper()
-    filename = f"{safe_ticker}.md"
+    filename = _report_filename(pid, ticker)
     filepath = os.path.join(REPORTS_DIR, filename)
     try:
         with open(filepath, "w", encoding="utf-8") as f:
@@ -176,8 +437,7 @@ def _read_report_file(filename: str) -> str:
 
 def _append_to_report_file(pid: str, ticker: str, content: str) -> str:
     """Append content to an existing report file or create it. Returns filename."""
-    safe_ticker = "".join(c for c in ticker if c.isalnum() or c in ('-', '_')).upper()
-    filename = f"{safe_ticker}.md"
+    filename = _report_filename(pid, ticker)
     filepath = os.path.join(REPORTS_DIR, filename)
     try:
         with open(filepath, "a", encoding="utf-8") as f:
@@ -218,6 +478,34 @@ def _update_post(pid: str, mutator):
         _write(posts)
         return True
 
+def _set_analysis_progress(
+    pid: str,
+    *,
+    state: Any = UNSET,
+    current_ticker: Any = UNSET,
+    completed: Any = UNSET,
+    total: Any = UNSET,
+):
+    def mutator(post: Dict[str, Any]):
+        ana = post.get("analysis") or {}
+        if not isinstance(ana, dict):
+            ana = {}
+        progress = ana.get("progress") or {}
+        if state is not UNSET:
+            progress["state"] = state
+        if current_ticker is not UNSET:
+            progress["currentTicker"] = current_ticker
+        if completed is not UNSET:
+            progress["completed"] = int(completed)
+        if total is not UNSET:
+            progress["total"] = int(total)
+        progress["updatedAt"] = _utcnow_iso()
+        ana["progress"] = progress
+        ana["updatedAt"] = _utcnow_iso()
+        post["analysis"] = ana
+        post["updatedAt"] = _utcnow_iso()
+    _update_post(pid, mutator)
+
 def _get_job_states() -> Dict[str, Any]:
     with JOB_LOCK:
         running = CURRENT_JOB.get("pid")
@@ -252,11 +540,14 @@ def _set_state(pid: str, state: str):
                     _update_post(pid, _set_completion_time)
                 except Exception:
                     pass  # Don't fail state update if post update fails
-        # Emit event only for terminal states to reduce chatter
-        if state in TERMINAL_STATES:
-            evt = {"type": "state", "pid": pid, "state": state}
-            QUEUE_EVENTS.append(evt)
-            QUEUE_CV.notify_all()
+        evt = {"type": "state", "pid": pid, "state": state}
+        QUEUE_EVENTS.append(evt)
+        QUEUE_CV.notify_all()
+    if state in TERMINAL_STATES:
+        try:
+            _set_analysis_progress(pid, state=state, current_ticker=None)
+        except Exception:
+            pass
 
 def _build_queue_status_payload() -> Dict[str, Any]:
     data = _get_job_states()
@@ -313,30 +604,14 @@ def run_tradingagents_analysis(tickers: List[str], options: Dict[str, Any]) -> D
     # Import concrete API as per README
     try:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
-        from personal_config import PERSONAL_CONFIG
     except Exception as e:
         return {"summary": f"TradingAgents import error: {e}", "per_ticker": {t: {"suggestion": "Hold", "signals": {"error": str(e)}} for t in tickers}}
 
-    opts = options or {}
-    # Build config baseline
-    try:
-        cfg = PERSONAL_CONFIG.copy()
-    except Exception:
-        cfg = {}
-    # Shallow-merge top-level known overrides
-    for k in [
-        "llm_provider", "deep_think_llm", "quick_think_llm", "backend_url",
-        "online_tools", "max_debate_rounds", "project_dir"
-    ]:
-        if k in opts:
-            cfg[k] = opts[k]
-    # Merge nested config dict
-    if isinstance(opts.get("config"), dict):
-        cfg.update(opts["config"])  # shallow update by design
-
-    selected_analysts = opts.get("selected_analysts") or ["market", "social", "news", "fundamentals"]
-    debug = bool(opts.get("debug", False))
-    date_str = (opts.get("date") or datetime.now(APP_TZ).date().isoformat())
+    resolved = _resolve_analysis_settings(options)
+    cfg = resolved["config"]
+    selected_analysts = resolved["selected_analysts"]
+    debug = resolved["debug"]
+    date_str = resolved["date"]
 
     result: Dict[str, Any] = {"summary": "", "per_ticker": {}}
     lines: List[str] = []
@@ -380,8 +655,9 @@ def get_latest_price(ticker: str) -> float | None:
     return None
 
 def get_chart_data(ticker: str, period="6mo", interval="1d") -> Dict[str, Any]:
+    empty = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
     if yf is None:
-        return {"timestamps": [], "closes": []}
+        return empty
     try:
         # For 4h, yfinance does not have a direct 4h interval; aggregate 1h into 4h
         agg4h = False
@@ -391,19 +667,43 @@ def get_chart_data(ticker: str, period="6mo", interval="1d") -> Dict[str, Any]:
             req_interval = "1h"
         df = yf.Ticker(ticker).history(period=period, interval=req_interval)
         if df is None or df.empty:
-            return {"timestamps": [], "closes": []}
+            return empty
         if agg4h:
-            # Resample to 4-hour buckets using the mean close; align to start of bucket
+            # Resample to 4-hour buckets with OHLCV semantics.
             try:
-                df = df.resample('4H').agg({'Close':'mean'})
-                df = df.dropna()
+                df = df.resample("4H").agg({
+                    "Open": "first",
+                    "High": "max",
+                    "Low": "min",
+                    "Close": "last",
+                    "Volume": "sum",
+                })
             except Exception:
                 pass
+        # Drop rows where Close is NaN (yfinance can return a partial/current bar at the end)
+        if "Close" in df.columns:
+            df = df.dropna(subset=["Close"])
+        if df.empty:
+            return empty
+        if "Close" not in df:
+            return empty
+        if "Open" not in df:
+            df["Open"] = df["Close"]
+        if "High" not in df:
+            df["High"] = df["Close"]
+        if "Low" not in df:
+            df["Low"] = df["Close"]
+        if "Volume" not in df:
+            df["Volume"] = 0
         ts = [int(pdts.timestamp() * 1000) for pdts in df.index.to_pydatetime()]
+        opens = [float(x) for x in df["Open"].fillna(df["Close"]).tolist()]
+        highs = [float(x) for x in df["High"].fillna(df["Close"]).tolist()]
+        lows = [float(x) for x in df["Low"].fillna(df["Close"]).tolist()]
         closes = [float(x) for x in df["Close"].tolist()]
-        return {"timestamps": ts, "closes": closes}
+        volumes = [max(0.0, float(x)) for x in df["Volume"].fillna(0).tolist()]
+        return {"timestamps": ts, "opens": opens, "highs": highs, "lows": lows, "closes": closes, "volumes": volumes}
     except Exception:
-        return {"timestamps": [], "closes": []}
+        return empty
 
 def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data)}\n\n"
@@ -455,7 +755,7 @@ def perform_analysis(pid: str) -> None:
         _set_state(pid, 'error')
         return
     tickers = p.get("tickers") or []
-    opts = p.get("options") or {}
+    opts = _normalize_options(p.get("options") or {})
 
     def init_analysis(pp):
         ana = pp.get("analysis") or {}
@@ -492,23 +792,17 @@ def perform_analysis(pid: str) -> None:
 
     try:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
-        from personal_config import PERSONAL_CONFIG
     except Exception as e:
         log_line(f"ERROR: {e}")
         _set_state(pid, 'error')
         return
 
-    try:
-        cfg = PERSONAL_CONFIG.copy()
-    except Exception:
-        cfg = {}
-    for k in ["llm_provider", "deep_think_llm", "quick_think_llm", "backend_url", "online_tools", "max_debate_rounds", "project_dir"]:
-        if k in opts: cfg[k] = opts[k]
-    if isinstance(opts.get("config"), dict):
-        cfg.update(opts["config"])
-    selected_analysts = opts.get("selected_analysts") or ["market", "social", "news", "fundamentals"]
-    debug = bool(opts.get("debug", False))
-    date_str = (opts.get("date") or datetime.now(APP_TZ).date().isoformat())
+    resolved = _resolve_analysis_settings(opts)
+    cfg = resolved["config"]
+    selected_analysts = resolved["selected_analysts"]
+    debug = resolved["debug"]
+    date_str = resolved["date"]
+    total_tickers = len(tickers)
 
     # Prepare isolated base dir
     try:
@@ -536,10 +830,12 @@ def perform_analysis(pid: str) -> None:
         except Exception:
             return None
 
-    for t in tickers:
+    for index, t in enumerate(tickers):
         if stop_ev.is_set():
+            _set_analysis_progress(pid, state='stopped', current_ticker=None, total=total_tickers)
             _set_state(pid, 'stopped')
             return
+        _set_analysis_progress(pid, state='running', current_ticker=t, completed=index, total=total_tickers)
         attempt = 1
         local_cfg = dict(cfg)
         while attempt <= 2:
@@ -604,6 +900,7 @@ def perform_analysis(pid: str) -> None:
                     pp.setdefault("snapshot", {})[t] = {"current": cur, "pct": pct}
                     pp["updatedAt"] = _utcnow_iso()
                 _update_post(pid, upd_snap)
+                _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=total_tickers)
                 break
             except Exception as e:
                 msg = str(e)
@@ -618,6 +915,7 @@ def perform_analysis(pid: str) -> None:
                     per[t] = {"suggestion": per.get(t, {}).get("suggestion", "Hold"), "signals": {"error": str(e)}}
                     pp["analysis"]["updatedAt"] = _utcnow_iso()
                 _update_post(pid, upd_err)
+                _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=total_tickers)
                 break
 
     # Final summary
@@ -634,27 +932,37 @@ def perform_analysis(pid: str) -> None:
         pp["analysis"]["updatedAt"] = _utcnow_iso()
         pp["updatedAt"] = _utcnow_iso()
     _update_post(pid, set_summary)
+    _set_analysis_progress(pid, state='done', current_ticker=None, completed=total_tickers, total=total_tickers)
 
 # -------------------
 # API
 # -------------------
 @app.get("/api/config")
 def api_config():
-    return jsonify({"server": True})
+    warnings = []
+    if tradingagents is None:
+        warnings.append("TradingAgents could not be imported. Analyses will fall back to placeholders until dependencies are fixed.")
+    if yf is None:
+        warnings.append("yfinance is unavailable. Price snapshots and charts may be empty.")
+    return jsonify({
+        "server": True,
+        "tradingagentsAvailable": tradingagents is not None,
+        "yfinanceAvailable": yf is not None,
+        "autoRegenerationEnabled": AUTO_REGEN_ENABLED,
+        "defaultPreset": DEFAULT_ANALYSIS_PRESET,
+        "analysisPresets": ANALYSIS_PRESETS,
+        "supportedAnalysts": SUPPORTED_ANALYSTS,
+        "analystLabels": ANALYST_LABELS,
+        "defaultOptions": _normalize_options({}),
+        "warnings": warnings,
+        "configSummary": _get_personal_config_summary(),
+    })
 
 @app.get("/api/stocks")
 def list_posts():
     posts = _read()
-    # Compile report files for each post and replace array with string content
     for p in posts:
-        ana = p.get("analysis")
-        if ana and isinstance(ana, dict):
-            report_files = ana.get("report", [])
-            if isinstance(report_files, list) and report_files:
-                # Replace the array with compiled string content for frontend
-                ana["report"] = _get_compiled_report(report_files)
-            elif not isinstance(report_files, str):
-                ana["report"] = ""
+        _normalize_post_for_client(p)
     return jsonify(posts)
 
 @app.get("/api/stocks/<pid>")
@@ -663,18 +971,8 @@ def get_post(pid):
     p = _find(posts, pid)
     if not p:
         return jsonify({"message": "Not found"}), 404
-    
-    # Compile report files into full text and replace array with string for frontend
-    ana = p.get("analysis")
-    if ana and isinstance(ana, dict):
-        report_files = ana.get("report", [])
-        if isinstance(report_files, list) and report_files:
-            # Replace the array with compiled string content for frontend
-            ana["report"] = _get_compiled_report(report_files)
-        elif not isinstance(report_files, str):
-            ana["report"] = ""
-    
-    return jsonify(p)
+
+    return jsonify(_normalize_post_for_client(p))
 
 @app.post("/api/stocks/reorder")
 def reorder_posts():
@@ -720,15 +1018,16 @@ def create_post():
     #   "purchases": {"TICK": 123}  # per-ticker purchase price (optional)
     # }
     now = _utcnow_iso()
+    normalized = _normalize_post_for_storage(payload)
     p = {
         "id": str(uuid.uuid4()),
         "createdAt": now,
         "updatedAt": now,
-        "title": (payload.get("title") or "").strip() or "Untitled",
-        "description": (payload.get("description") or "").strip(),
-        "tickers": [t.strip().upper() for t in (payload.get("tickers") or []) if t.strip()],
-        "options": payload.get("options") or {},
-        "purchases": payload.get("purchases") or {},  # {ticker: price}
+        "title": normalized["title"],
+        "description": normalized["description"],
+        "tickers": normalized["tickers"],
+        "options": normalized["options"],
+        "purchases": normalized["purchases"],  # {ticker: price}
         "analysis": None,  # last TradingAgents run
         "snapshot": {}     # {ticker: {"current": float, "pct": float}}
     }
@@ -753,7 +1052,7 @@ def summarize_post(pid):
     # Compile report files into text for parsing
     report_files = analysis.get("report", [])
     report_text = _get_compiled_report(report_files) if isinstance(report_files, list) else (report_files if isinstance(report_files, str) else "")
-    opts = p.get("options") or {}
+    opts = _normalize_options(p.get("options") or {})
     date_str = (opts.get("date") or datetime.now(APP_TZ).date().isoformat())
 
     def parse_from_report(tk: str) -> str | None:
@@ -791,16 +1090,8 @@ def summarize_post(pid):
         p["updatedAt"] = _utcnow_iso()
         _write(posts)
     
-    # Compile report files and replace array with string for frontend response
-    ana = p.get("analysis")
-    if ana and isinstance(ana, dict):
-        report_files = ana.get("report", [])
-        if isinstance(report_files, list) and report_files:
-            ana["report"] = _get_compiled_report(report_files)
-        elif not isinstance(report_files, str):
-            ana["report"] = ""
-    
-    return jsonify(p)
+
+    return jsonify(_normalize_post_for_client(p))
 
 @app.put("/api/stocks/<pid>")
 def update_post(pid):
@@ -810,15 +1101,27 @@ def update_post(pid):
     if not p:
         return jsonify({"message": "Not found"}), 404
 
-    # editable fields
-    if "title" in payload: p["title"] = (payload["title"] or "").strip() or "Untitled"
-    if "description" in payload: p["description"] = (payload["description"] or "").strip()
-    if "tickers" in payload: p["tickers"] = [t.strip().upper() for t in payload.get("tickers") or [] if t.strip()]
-    if "options" in payload: p["options"] = payload.get("options") or {}
-    if "purchases" in payload: p["purchases"] = payload.get("purchases") or {}
+    previous_tickers = list(p.get("tickers") or [])
+    previous_options = _normalize_options(p.get("options") or {})
+    normalized = _normalize_post_for_storage(payload, p)
+
+    p["title"] = normalized["title"]
+    p["description"] = normalized["description"]
+    p["tickers"] = normalized["tickers"]
+    p["options"] = normalized["options"]
+    p["purchases"] = normalized["purchases"]
+
+    analysis_inputs_changed = previous_tickers != normalized["tickers"] or previous_options != normalized["options"]
+    if analysis_inputs_changed:
+        p["analysis"] = None
+        p["snapshot"] = {}
+    elif isinstance(p.get("snapshot"), dict):
+        for ticker, snap in p["snapshot"].items():
+            current = (snap or {}).get("current")
+            snap["pct"] = percent_change(normalized["purchases"].get(ticker), current) if current is not None else None
     p["updatedAt"] = _utcnow_iso()
     _write(posts)
-    return jsonify(p)
+    return jsonify(_normalize_post_for_client(p))
 
 @app.delete("/api/stocks/<pid>")
 def delete_post(pid):
@@ -841,7 +1144,7 @@ def analyze_post(pid):
         return jsonify({"message": "Not found"}), 404
 
     tickers = p.get("tickers") or []
-    opts = p.get("options") or {}
+    opts = _normalize_options(p.get("options") or {})
     try:
         analysis = run_tradingagents_analysis(tickers, opts)
     except Exception as e:
@@ -859,11 +1162,21 @@ def analyze_post(pid):
         pct = percent_change(buy, cur) if buy is not None else None
         snapshot[t] = {"current": cur, "pct": pct}
 
-    p["analysis"] = {"updatedAt": _utcnow_iso(), **analysis}
+    p["analysis"] = {
+        "updatedAt": _utcnow_iso(),
+        "progress": {
+            "state": "done",
+            "completed": len(tickers),
+            "total": len(tickers),
+            "currentTicker": None,
+            "updatedAt": _utcnow_iso(),
+        },
+        **analysis,
+    }
     p["snapshot"] = snapshot
     p["updatedAt"] = _utcnow_iso()
     _write(posts)
-    return jsonify(p)
+    return jsonify(_normalize_post_for_client(p))
 
 @app.post("/api/queue/<pid>")
 def enqueue_post(pid):
@@ -883,6 +1196,7 @@ def enqueue_post(pid):
             # If previously terminal state (done/error/stopped), reset to queued
             JOB_STATE[pid] = 'queued'
             newly_added = True
+    _set_state(pid, JOB_STATE.get(pid, 'queued'))
     # Clear "done" marker if re-queued: remove final state so UI won't show stale done
     st = JOB_STATE.get(pid)
     if st == 'queued':
@@ -907,6 +1221,13 @@ def enqueue_post(pid):
                                     pass
                         ana["report"] = []
                         # Optional: could also clear summary; leaving summary intact until new one generated
+                    ana["progress"] = {
+                        "state": "queued",
+                        "completed": 0,
+                        "total": len(pp.get("tickers") or []),
+                        "currentTicker": None,
+                        "updatedAt": _utcnow_iso(),
+                    }
                     pp["analysis"] = ana
             _update_post(pid, _prep)
         except Exception:
@@ -920,11 +1241,13 @@ def stop_post(pid):
         if pid in JOB_QUEUE:
             JOB_QUEUE[:] = [x for x in JOB_QUEUE if x != pid]
             JOB_STATE[pid] = 'stopped'
+            _set_state(pid, 'stopped')
             return jsonify(_get_job_states())
         if pid == CURRENT_JOB.get("pid"):
             ev = STOP_FLAGS.setdefault(pid, threading.Event())
             ev.set()
             JOB_STATE[pid] = 'stopped'
+            _set_state(pid, 'stopped')
             return jsonify(_get_job_states())
     return jsonify(_get_job_states())
 
@@ -1004,7 +1327,29 @@ def refresh_snapshot(pid):
     p["snapshot"] = snapshot
     p["updatedAt"] = _utcnow_iso()
     _write(posts)
-    return jsonify(p)
+    return jsonify(_normalize_post_for_client(p))
+
+@app.post("/api/refresh-snapshots")
+def refresh_all_snapshots():
+    posts = _read()
+    refreshed = 0
+    for post in posts:
+        tickers = post.get("tickers") or []
+        snapshot = {}
+        for ticker in tickers:
+            cur = get_latest_price(ticker)
+            buy = None
+            if isinstance(post.get("purchases"), dict):
+                buy = (post.get("purchases") or {}).get(ticker)
+            elif isinstance(post.get("purchases"), (int, float)):
+                buy = post.get("purchases")
+            pct = percent_change(buy, cur) if buy is not None else None
+            snapshot[ticker] = {"current": cur, "pct": pct}
+        post["snapshot"] = snapshot
+        post["updatedAt"] = _utcnow_iso()
+        refreshed += 1
+    _write(posts)
+    return jsonify({"refreshed": refreshed})
 
 @app.get("/api/analyze-stream/<pid>")
 def analyze_post_stream(pid):
@@ -1018,7 +1363,7 @@ def analyze_post_stream(pid):
         return jsonify({"message": "Not found"}), 404
 
     tickers = p.get("tickers") or []
-    opts = p.get("options") or {}
+    opts = _normalize_options(p.get("options") or {})
 
     def gen():
         # Initialize analysis log structure
@@ -1033,6 +1378,13 @@ def analyze_post_stream(pid):
                 pass
             if "per_ticker" not in ana:
                 ana["per_ticker"] = {}
+            progress = ana.get("progress") or {}
+            progress.setdefault("state", "running")
+            progress.setdefault("completed", 0)
+            progress.setdefault("total", len(tickers))
+            progress.setdefault("currentTicker", None)
+            progress["updatedAt"] = _utcnow_iso()
+            ana["progress"] = progress
             ana["updatedAt"] = _utcnow_iso()
             pp["analysis"] = ana
 
@@ -1042,7 +1394,6 @@ def analyze_post_stream(pid):
         # Import TA and prepare config
         try:
             from tradingagents.graph.trading_graph import TradingAgentsGraph
-            from personal_config import PERSONAL_CONFIG
         except Exception as e:
             # Log error and finish
             def log_err(pp):
@@ -1060,22 +1411,11 @@ def analyze_post_stream(pid):
             yield _sse({"type": "error", "message": f"TradingAgents import error: {e}"})
             return
 
-        cfg = None
-        try:
-            cfg = PERSONAL_CONFIG.copy()
-        except Exception:
-            cfg = {}
-
-        # Shallow top-level overrides
-        for k in ["llm_provider", "deep_think_llm", "quick_think_llm", "backend_url", "online_tools", "max_debate_rounds", "project_dir"]:
-            if k in opts:
-                cfg[k] = opts[k]
-        if isinstance(opts.get("config"), dict):
-            cfg.update(opts["config"])  # shallow merge
-
-        selected_analysts = opts.get("selected_analysts") or ["market", "social", "news", "fundamentals"]
-        debug = bool(opts.get("debug", False))
-        date_str = (opts.get("date") or datetime.now(APP_TZ).date().isoformat())
+        resolved = _resolve_analysis_settings(opts)
+        cfg = resolved["config"]
+        selected_analysts = resolved["selected_analysts"]
+        debug = resolved["debug"]
+        date_str = resolved["date"]
 
         def log_line(msg, level="info"):
             wrapped = _wrap_text(msg)
@@ -1104,7 +1444,8 @@ def analyze_post_stream(pid):
         if "project_dir" not in cfg and base_run_dir:
             cfg["project_dir"] = os.path.join(base_run_dir, "base")
 
-        for t in tickers:
+        for index, t in enumerate(tickers):
+            _set_analysis_progress(pid, state='running', current_ticker=t, completed=index, total=len(tickers))
             yield _sse({"type": "ticker-start", "ticker": t})
             attempt = 1
             local_cfg = dict(cfg)
@@ -1206,6 +1547,7 @@ def analyze_post_stream(pid):
                         pp.setdefault("snapshot", {})[t] = {"current": cur, "pct": pct}
                         pp["updatedAt"] = _utcnow_iso()
                     _update_post(pid, upd_snap)
+                    _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=len(tickers))
 
                     yield _sse({"type": "ticker-done", "ticker": t, "suggestion": norm, "current": cur, "pct": pct})
                     break  # success, stop retry loop
@@ -1228,6 +1570,7 @@ def analyze_post_stream(pid):
                         per[t] = {"suggestion": per.get(t, {}).get("suggestion", "Hold"), "signals": {"error": str(e)}}
                         pp["analysis"]["updatedAt"] = _utcnow_iso()
                     _update_post(pid, upd_err)
+                    _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=len(tickers))
                     try:
                         yield _sse({"type": "ticker-error", "ticker": t, "error": str(e)})
                     except Exception:
@@ -1248,6 +1591,7 @@ def analyze_post_stream(pid):
             pp["analysis"]["summary"] = "\n".join(lines)
             pp["analysis"]["updatedAt"] = _utcnow_iso()
         _update_post(pid, set_summary)
+        _set_analysis_progress(pid, state='done', current_ticker=None, completed=len(tickers), total=len(tickers))
         yield _sse({"type": "done", "id": pid})
 
     headers = {
@@ -1263,22 +1607,25 @@ def analyze_all():
     with JOB_LOCK:
         for p in posts:
             pid = str(p.get("id"))
+            if not (p.get("tickers") or []):
+                continue
             # Skip if already running or queued
             if pid == CURRENT_JOB.get("pid") or pid in JOB_QUEUE:
                 continue
             JOB_QUEUE.append(pid)
             JOB_STATE[pid] = 'queued'
+            _set_state(pid, 'queued')
     return jsonify(_get_job_states())
 
 @app.get("/api/chart")
 def chart():
     """
-    Returns OHLC close series suitable for a quick line chart.
+    Returns OHLCV series suitable for line or candlestick charts.
     Params: ticker, period=6mo, interval=1d
     """
     ticker = (request.args.get("ticker") or "").upper().strip()
     if not ticker:
-        return jsonify({"timestamps": [], "closes": []})
+        return jsonify({"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []})
     period = request.args.get("period") or "6mo"
     interval = request.args.get("interval") or "1d"
     return jsonify(get_chart_data(ticker, period, interval))
@@ -1335,6 +1682,8 @@ def job_worker_loop():
                 pid = JOB_QUEUE.pop(0)
                 CURRENT_JOB["pid"] = pid
                 JOB_STATE[pid] = 'running'
+        if pid:
+            _set_state(pid, 'running')
         # Clear any existing report when job starts successfully
         if pid:
             def _clear_report(pp):
@@ -1353,6 +1702,13 @@ def job_worker_loop():
                             pass
                 ana["report"] = []  # Reset to empty array
                 ana.setdefault("per_ticker", {})
+                ana["progress"] = {
+                    "state": "running",
+                    "completed": 0,
+                    "total": len(pp.get("tickers") or []),
+                    "currentTicker": None,
+                    "updatedAt": _utcnow_iso(),
+                }
                 ana["updatedAt"] = _utcnow_iso()
                 # Remove any stale completion timestamp
                 ana.pop("completedAt", None)
