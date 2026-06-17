@@ -2,7 +2,7 @@
 import os, json, uuid, threading, time, traceback
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
-from flask import Flask, jsonify, request, send_from_directory, render_template, Response, stream_with_context
+from flask import Flask, jsonify, request, send_from_directory, render_template, Response, stream_with_context, redirect, url_for
 from zoneinfo import ZoneInfo
 
 # Optional deps:
@@ -27,6 +27,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 REPORTS_DIR = os.path.join(DATA_DIR, "reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 DATA_FILE = os.path.join(DATA_DIR, "stocks.json")
+ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
 DATA_LOCK = threading.RLock()
 
 AUTO_REGEN_ENABLED = True
@@ -183,6 +184,98 @@ def _write(obj: List[Dict[str, Any]]):
 def _utcnow_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
+# -------------------
+# Accounts (grouping layer for holdings)
+# -------------------
+def _read_accounts() -> List[Dict[str, Any]]:
+    with DATA_LOCK:
+        try:
+            with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception:
+            pass
+        return []
+
+def _write_accounts(obj: List[Dict[str, Any]]):
+    with DATA_LOCK:
+        tmp = ACCOUNTS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, ACCOUNTS_FILE)
+
+def _default_account(order: int = 0) -> Dict[str, Any]:
+    now = _utcnow_iso()
+    return {
+        "id": str(uuid.uuid4()),
+        "name": "My Portfolio",
+        "type": "account",
+        "order": order,
+        "collapsed": False,
+        "keyword": "",
+        "cashFlows": [],
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+def _normalize_cashflows(raw: Any) -> List[Dict[str, Any]]:
+    """Validate/clean a list of account cash flows (deposits / withdrawals)."""
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        if kind not in ("deposit", "withdrawal"):
+            continue
+        try:
+            amount = round(float(item.get("amount")), 2)
+        except Exception:
+            continue
+        if amount <= 0:
+            continue
+        date = _sanitize_date(item.get("date")) or datetime.now(APP_TZ).date().isoformat()
+        note = str(item.get("note") or "").strip()[:280]
+        out.append({
+            "id": str(item.get("id") or uuid.uuid4()),
+            "type": kind,
+            "amount": amount,
+            "date": date,
+            "note": note,
+        })
+    return out
+
+def _ensure_accounts() -> List[Dict[str, Any]]:
+    """Return accounts (sorted by order), seeding a default account if none exist."""
+    with DATA_LOCK:
+        accounts = _read_accounts()
+        if not accounts:
+            accounts = [_default_account()]
+            _write_accounts(accounts)
+        accounts.sort(key=lambda a: (a.get("order", 0), a.get("createdAt", "")))
+        return accounts
+
+def _normalize_account(payload: Dict[str, Any], existing: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    existing = existing or {}
+    name = str((payload.get("name") if "name" in payload else existing.get("name")) or "").strip()
+    atype = str((payload.get("type") if "type" in payload else existing.get("type")) or "account").strip().lower()
+    if atype not in ("account", "watchlist"):
+        atype = "account"
+    collapsed = _coerce_bool(
+        payload.get("collapsed") if "collapsed" in payload else existing.get("collapsed"),
+        False,
+    )
+    if "cashFlows" in payload:
+        cash_flows = _normalize_cashflows(payload.get("cashFlows"))
+    else:
+        cash_flows = _normalize_cashflows(existing.get("cashFlows") or [])
+    # Per-account "keyword" (a soft lock, not a secret): empty string means no lock.
+    # Stored in plaintext so it can be recovered from the backend if forgotten.
+    keyword = str((payload.get("keyword") if "keyword" in payload else existing.get("keyword")) or "").strip()[:64]
+    return {"name": (name or "Untitled")[:80], "type": atype, "collapsed": collapsed, "keyword": keyword, "cashFlows": cash_flows}
+
 def _coerce_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -246,6 +339,159 @@ def _normalize_purchases(raw: Any, tickers: List[str]) -> Dict[str, float]:
             continue
         purchases[ticker] = price
     return purchases
+
+def _normalize_transactions(raw: Any) -> List[Dict[str, Any]]:
+    """Validate/clean a list of buy/sell transactions for a holding."""
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ttype = str(item.get("type") or "").strip().lower()
+        if ttype not in ("buy", "sell"):
+            continue
+        try:
+            shares = round(float(item.get("shares")), 6)
+        except Exception:
+            continue
+        try:
+            price = round(float(item.get("price")), 4)
+        except Exception:
+            continue
+        if shares <= 0 or price < 0:
+            continue
+        try:
+            fee = max(0.0, round(float(item.get("fee") or 0), 4))
+        except Exception:
+            fee = 0.0
+        date = _sanitize_date(item.get("date")) or datetime.now(APP_TZ).date().isoformat()
+        note = str(item.get("note") or "").strip()[:280]
+        tid = str(item.get("id") or uuid.uuid4())
+        out.append({
+            "id": tid,
+            "type": ttype,
+            "shares": shares,
+            "price": price,
+            "fee": fee,
+            "date": date,
+            "note": note,
+        })
+    return out
+
+COMMENT_STATUSES = ("pending", "accepted", "discarded")
+
+def _normalize_comments(raw: Any) -> List[Dict[str, Any]]:
+    """Validate/clean a holding's comment cards.
+
+    Comments are freeform notes that don't affect the position. Each has a
+    status: pending (un-handled), accepted, or discarded.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()[:2000]
+        if not text:
+            continue
+        status = str(item.get("status") or "pending").strip().lower()
+        if status not in COMMENT_STATUSES:
+            status = "pending"
+        now = _utcnow_iso()
+        out.append({
+            "id": str(item.get("id") or uuid.uuid4()),
+            "text": text,
+            "status": status,
+            "author": str(item.get("author") or "").strip()[:80],
+            "createdAt": str(item.get("createdAt") or now),
+            "updatedAt": str(item.get("updatedAt") or now),
+        })
+    return out
+
+def _position_from_transactions(txns: Any) -> Dict[str, Any]:
+    """Average-cost accounting over a holding's transactions.
+
+    Returns shares (net), avgCost (weighted average cost basis of remaining
+    shares), realizedPnl (cumulative gains booked on sells, net of fees), and
+    invested (net cash deployed). Transactions are processed in date order.
+    """
+    empty = {"shares": 0.0, "avgCost": None, "realizedPnl": 0.0, "invested": 0.0, "fees": 0.0}
+    if not isinstance(txns, list) or not txns:
+        return empty
+    ordered = sorted(
+        [t for t in txns if isinstance(t, dict)],
+        key=lambda t: str(t.get("date") or ""),
+    )
+    shares = 0.0
+    avg_cost = 0.0
+    realized = 0.0
+    invested = 0.0
+    fees = 0.0
+    for t in ordered:
+        ttype = str(t.get("type") or "").lower()
+        try:
+            qty = float(t.get("shares") or 0)
+            price = float(t.get("price") or 0)
+        except Exception:
+            continue
+        try:
+            fee = float(t.get("fee") or 0)
+        except Exception:
+            fee = 0.0
+        if qty <= 0 or price < 0:
+            continue
+        fees += fee
+        if ttype == "buy":
+            new_shares = shares + qty
+            if new_shares > 0:
+                avg_cost = (avg_cost * shares + price * qty) / new_shares
+            shares = new_shares
+            invested += price * qty + fee
+        elif ttype == "sell":
+            sell_qty = min(qty, shares) if shares > 0 else 0.0
+            realized += (price - avg_cost) * sell_qty - fee
+            shares = max(0.0, shares - qty)
+            invested -= price * qty - fee
+            if shares <= 1e-9:
+                shares = 0.0
+    return {
+        "shares": round(shares, 6),
+        "avgCost": round(avg_cost, 4) if (shares > 0 and avg_cost > 0) else None,
+        "realizedPnl": round(realized, 4),
+        "invested": round(invested, 4),
+        "fees": round(fees, 4),
+    }
+
+def _snapshot_entry(position: Dict[str, Any], current: float | None) -> Dict[str, Any]:
+    """Build a per-ticker snapshot entry from a derived position + latest price."""
+    shares = (position or {}).get("shares") or 0.0
+    avg = (position or {}).get("avgCost")
+    pct = percent_change(avg, current) if (avg and current is not None) else None
+    market_value = (shares * current) if (current is not None and shares) else None
+    unrealized = ((current - avg) * shares) if (current is not None and avg and shares) else None
+    return {
+        "current": current,
+        "pct": pct,
+        "shares": round(shares, 6),
+        "avgCost": avg,
+        "marketValue": round(market_value, 4) if market_value is not None else None,
+        "unrealizedPnl": round(unrealized, 4) if unrealized is not None else None,
+        "realizedPnl": (position or {}).get("realizedPnl") or 0.0,
+    }
+
+def _build_holding_snapshot(holding: Dict[str, Any]) -> Dict[str, Any]:
+    """Recompute the full snapshot dict for a (single-ticker) holding."""
+    tickers = holding.get("tickers") or ([holding.get("ticker")] if holding.get("ticker") else [])
+    pos = _position_from_transactions(holding.get("transactions") or [])
+    snapshot: Dict[str, Any] = {}
+    for t in tickers:
+        if not t:
+            continue
+        cur = get_latest_price(t)
+        snapshot[t] = _snapshot_entry(pos, cur)
+    return snapshot
 
 def _sanitize_date(raw: Any) -> str | None:
     if not raw:
@@ -361,21 +607,39 @@ def _resolve_analysis_settings(raw_options: Any) -> Dict[str, Any]:
 
 def _normalize_post_for_storage(payload: Dict[str, Any], existing: Dict[str, Any] | None = None) -> Dict[str, Any]:
     existing = existing or {}
-    tickers = _normalize_tickers(payload.get("tickers") if "tickers" in payload else existing.get("tickers"))
+    # A holding tracks a single ticker. Accept either `ticker` or `tickers`.
+    if "ticker" in payload:
+        tickers = _normalize_tickers([payload.get("ticker")])
+    elif "tickers" in payload:
+        tickers = _normalize_tickers(payload.get("tickers"))
+    else:
+        tickers = _normalize_tickers(existing.get("tickers") or existing.get("ticker"))
+    tickers = tickers[:1]  # enforce single-ticker holdings
     title = str((payload.get("title") if "title" in payload else existing.get("title")) or "").strip()
     description = str((payload.get("description") if "description" in payload else existing.get("description")) or "").strip()
+    note = str((payload.get("note") if "note" in payload else existing.get("note")) or "").strip()[:600]
+    account_id = str((payload.get("accountId") if "accountId" in payload else existing.get("accountId")) or "").strip()
     options = _normalize_options(payload.get("options") if "options" in payload else existing.get("options") or {})
 
-    if "purchases" in payload:
-        purchases = _normalize_purchases(payload.get("purchases"), tickers)
+    if "transactions" in payload:
+        transactions = _normalize_transactions(payload.get("transactions"))
     else:
-        purchases = _normalize_purchases(existing.get("purchases") or {}, tickers)
+        transactions = _normalize_transactions(existing.get("transactions") or [])
+
+    # Keep a back-compat purchases map (avg cost) so legacy snapshot code paths work.
+    position = _position_from_transactions(transactions)
+    purchases: Dict[str, float] = {}
+    if tickers and position.get("avgCost"):
+        purchases[tickers[0]] = position["avgCost"]
 
     return {
-        "title": title or _default_title_for_tickers(tickers),
+        "title": title or (tickers[0] if tickers else "Untitled"),
         "description": description,
+        "note": note,
+        "accountId": account_id,
         "tickers": tickers,
         "options": options,
+        "transactions": transactions,
         "purchases": purchases,
     }
 
@@ -705,6 +969,99 @@ def get_chart_data(ticker: str, period="6mo", interval="1d") -> Dict[str, Any]:
     except Exception:
         return empty
 
+# -------------------
+# Fundamentals (yfinance .info), normalized to the cheatsheet metrics
+# -------------------
+_FUND_CACHE: Dict[str, Any] = {}  # ticker -> (timestamp, payload)
+_FUND_TTL = 3600.0  # seconds
+
+def get_fundamentals(ticker: str) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "ticker": ticker,
+        "name": None,
+        "currency": None,
+        "sector": None,
+        "industry": None,
+        "metrics": {},
+        "available": False,
+        "error": None,
+    }
+    if yf is None:
+        out["error"] = "yfinance unavailable"
+        return out
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    if not info or not isinstance(info, dict):
+        out["error"] = "No fundamental data returned"
+        return out
+
+    def num(x):
+        return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+    def pct(x):
+        v = num(x)
+        return v * 100.0 if v is not None else None
+
+    out["name"] = info.get("longName") or info.get("shortName")
+    out["currency"] = info.get("financialCurrency") or info.get("currency")
+    out["sector"] = info.get("sector")
+    out["industry"] = info.get("industry")
+
+    d2e_raw = num(info.get("debtToEquity"))
+    metrics = {
+        # Valuation
+        "peTrailing": num(info.get("trailingPE")),
+        "peForward": num(info.get("forwardPE")),
+        "peg": num(info.get("trailingPegRatio")) or num(info.get("pegRatio")),
+        "ps": num(info.get("priceToSalesTrailing12Months")),
+        "pb": num(info.get("priceToBook")),
+        "evEbitda": num(info.get("enterpriseToEbitda")),
+        # Profitability (yfinance reports as fractions)
+        "grossMargin": pct(info.get("grossMargins")),
+        "operatingMargin": pct(info.get("operatingMargins")),
+        "netMargin": pct(info.get("profitMargins")),
+        "ebitdaMargin": pct(info.get("ebitdaMargins")),
+        "roe": pct(info.get("returnOnEquity")),
+        "roa": pct(info.get("returnOnAssets")),
+        # Growth
+        "revenueGrowth": pct(info.get("revenueGrowth")),
+        "earningsGrowth": pct(info.get("earningsGrowth")),
+        # Financial health
+        "debtToEquity": (d2e_raw / 100.0) if d2e_raw is not None else None,  # yfinance gives % form
+        "currentRatio": num(info.get("currentRatio")),
+        "quickRatio": num(info.get("quickRatio")),
+        # Cash flow
+        "freeCashflow": num(info.get("freeCashflow")),
+        "operatingCashflow": num(info.get("operatingCashflow")),
+        # Context
+        "marketCap": num(info.get("marketCap")),
+        "totalCash": num(info.get("totalCash")),
+        "totalDebt": num(info.get("totalDebt")),
+        "revenue": num(info.get("totalRevenue")),
+        "price": num(info.get("currentPrice")) or num(info.get("regularMarketPrice")),
+        "eps": num(info.get("trailingEps")),
+        "beta": num(info.get("beta")),
+    }
+    # Derived metrics
+    fcf, rev, mc = metrics.get("freeCashflow"), metrics.get("revenue"), metrics.get("marketCap")
+    if fcf is not None and rev:
+        metrics["fcfMargin"] = fcf / rev * 100.0
+    if fcf is not None and mc:
+        metrics["fcfYield"] = fcf / mc * 100.0
+    tc, td = metrics.get("totalCash"), metrics.get("totalDebt")
+    if tc is not None and td is not None:
+        metrics["netCash"] = tc - td
+    dy = num(info.get("dividendYield"))
+    if dy is not None:
+        metrics["dividendYield"] = dy * 100.0 if dy < 1 else dy
+
+    out["metrics"] = {k: round(v, 4) for k, v in metrics.items() if v is not None}
+    out["available"] = bool(out["metrics"])
+    return out
+
 def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
@@ -890,14 +1247,11 @@ def perform_analysis(pid: str) -> None:
                     per[t] = {"suggestion": norm, "signals": signals}
                     pp["analysis"]["updatedAt"] = _utcnow_iso()
                 _update_post(pid, upd)
-                # Snapshot
+                # Snapshot (position/P&L derived from this holding's transactions)
                 cur = get_latest_price(t)
-                buy = None
-                if isinstance(p.get("purchases"), dict): buy = (p.get("purchases") or {}).get(t)
-                elif isinstance(p.get("purchases"), (int, float)): buy = p.get("purchases")
-                pct = percent_change(buy, cur) if buy is not None else None
                 def upd_snap(pp):
-                    pp.setdefault("snapshot", {})[t] = {"current": cur, "pct": pct}
+                    pos = _position_from_transactions(pp.get("transactions") or [])
+                    pp.setdefault("snapshot", {})[t] = _snapshot_entry(pos, cur)
                     pp["updatedAt"] = _utcnow_iso()
                 _update_post(pid, upd_snap)
                 _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=total_tickers)
@@ -937,6 +1291,108 @@ def perform_analysis(pid: str) -> None:
 # -------------------
 # API
 # -------------------
+@app.get("/api/accounts")
+def list_accounts():
+    return jsonify(_ensure_accounts())
+
+@app.post("/api/accounts")
+def create_account():
+    payload = request.get_json(force=True, silent=True) or {}
+    with DATA_LOCK:
+        accounts = _ensure_accounts()
+        fields = _normalize_account(payload)
+        now = _utcnow_iso()
+        acc = {
+            "id": str(uuid.uuid4()),
+            "name": fields["name"],
+            "type": fields["type"],
+            "order": (max([a.get("order", 0) for a in accounts]) + 1) if accounts else 0,
+            "collapsed": fields["collapsed"],
+            "keyword": fields["keyword"],
+            "cashFlows": fields["cashFlows"],
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        accounts.append(acc)
+        _write_accounts(accounts)
+    return jsonify(acc), 201
+
+@app.put("/api/accounts/<aid>")
+def update_account(aid):
+    payload = request.get_json(force=True, silent=True) or {}
+    with DATA_LOCK:
+        accounts = _read_accounts()
+        acc = next((a for a in accounts if str(a.get("id")) == str(aid)), None)
+        if not acc:
+            return jsonify({"message": "Not found"}), 404
+        fields = _normalize_account(payload, acc)
+        acc["name"] = fields["name"]
+        acc["type"] = fields["type"]
+        acc["collapsed"] = fields["collapsed"]
+        acc["keyword"] = fields["keyword"]
+        acc["cashFlows"] = fields["cashFlows"]
+        acc["updatedAt"] = _utcnow_iso()
+        _write_accounts(accounts)
+    return jsonify(acc)
+
+@app.post("/api/accounts/<aid>/collapse")
+def collapse_account(aid):
+    payload = request.get_json(force=True, silent=True) or {}
+    with DATA_LOCK:
+        accounts = _read_accounts()
+        acc = next((a for a in accounts if str(a.get("id")) == str(aid)), None)
+        if not acc:
+            return jsonify({"message": "Not found"}), 404
+        if "collapsed" in payload:
+            acc["collapsed"] = _coerce_bool(payload.get("collapsed"), False)
+        else:
+            acc["collapsed"] = not _coerce_bool(acc.get("collapsed"), False)
+        acc["updatedAt"] = _utcnow_iso()
+        _write_accounts(accounts)
+    return jsonify(acc)
+
+@app.post("/api/accounts/reorder")
+def reorder_accounts():
+    payload = request.get_json(force=True, silent=True) or {}
+    order = payload.get("order") or []
+    if not isinstance(order, list):
+        return jsonify({"message": "order must be a list of ids"}), 400
+    with DATA_LOCK:
+        accounts = _read_accounts()
+        by_id = {str(a.get("id")): a for a in accounts}
+        rank = {str(pid): i for i, pid in enumerate(order)}
+        for a in accounts:
+            aid_s = str(a.get("id"))
+            if aid_s in rank:
+                a["order"] = rank[aid_s]
+        accounts.sort(key=lambda a: (a.get("order", 0), a.get("createdAt", "")))
+        _write_accounts(accounts)
+    return jsonify({"message": "ok", "order": [a.get("id") for a in accounts]})
+
+@app.delete("/api/accounts/<aid>")
+def delete_account(aid):
+    with DATA_LOCK:
+        accounts = _read_accounts()
+        acc = next((a for a in accounts if str(a.get("id")) == str(aid)), None)
+        if not acc:
+            return jsonify({"message": "Not found"}), 404
+        remaining = [a for a in accounts if str(a.get("id")) != str(aid)]
+        if not remaining:
+            remaining = [_default_account()]
+        target_id = remaining[0]["id"]
+        # Reassign this account's holdings to the first remaining account.
+        posts = _read()
+        moved = 0
+        for p in posts:
+            if str(p.get("accountId")) == str(aid):
+                p["accountId"] = target_id
+                p["updatedAt"] = _utcnow_iso()
+                moved += 1
+        if moved:
+            _write(posts)
+        _write_accounts(remaining)
+    return jsonify({"message": "deleted", "movedHoldings": moved, "reassignedTo": target_id})
+
 @app.get("/api/config")
 def api_config():
     warnings = []
@@ -1009,28 +1465,41 @@ def reorder_posts():
 @app.post("/api/stocks")
 def create_post():
     payload = request.get_json(force=True, silent=True) or {}
-    # shape:
+    # A holding tracks a single ticker inside an account. shape:
     # {
-    #   "title": str,
-    #   "description": str,
-    #   "tickers": [str, ...],
+    #   "ticker": str,              # the symbol to track
+    #   "accountId": str,           # owning account (defaults to first account)
+    #   "title": str, "note": str,
     #   "options": {...},           # TradingAgents options
-    #   "purchases": {"TICK": 123}  # per-ticker purchase price (optional)
+    #   "transactions": [ {type, shares, price, date, fee, note}, ... ]
     # }
     now = _utcnow_iso()
     normalized = _normalize_post_for_storage(payload)
+    account_id = normalized["accountId"]
+    if not account_id:
+        accounts = _ensure_accounts()
+        account_id = accounts[0]["id"] if accounts else ""
     p = {
         "id": str(uuid.uuid4()),
         "createdAt": now,
         "updatedAt": now,
+        "accountId": account_id,
         "title": normalized["title"],
         "description": normalized["description"],
+        "note": normalized["note"],
+        "ticker": normalized["tickers"][0] if normalized["tickers"] else "",
         "tickers": normalized["tickers"],
+        "transactions": normalized["transactions"],
         "options": normalized["options"],
-        "purchases": normalized["purchases"],  # {ticker: price}
+        "purchases": normalized["purchases"],  # {ticker: avgCost} (back-compat)
         "analysis": None,  # last TradingAgents run
-        "snapshot": {}     # {ticker: {"current": float, "pct": float}}
+        "snapshot": {}     # {ticker: {current, pct, shares, avgCost, marketValue, ...}}
     }
+    # Compute an initial snapshot so the new holding shows price/P&L immediately.
+    try:
+        p["snapshot"] = _build_holding_snapshot(p)
+    except Exception:
+        p["snapshot"] = {}
     posts = _read()
     posts.append(p)
     _write(posts)
@@ -1084,7 +1553,8 @@ def summarize_post(pid):
         lines.append(f"{tk}: {sug} ({date_str})")
 
     if lines:
-        p.setdefault("analysis", {})
+        if not p.get("analysis"):
+            p["analysis"] = {}
         p["analysis"]["summary"] = "\n".join(lines)
         p["analysis"]["updatedAt"] = _utcnow_iso()
         p["updatedAt"] = _utcnow_iso()
@@ -1107,18 +1577,26 @@ def update_post(pid):
 
     p["title"] = normalized["title"]
     p["description"] = normalized["description"]
+    p["note"] = normalized["note"]
+    if "accountId" in payload and normalized["accountId"]:
+        p["accountId"] = normalized["accountId"]
     p["tickers"] = normalized["tickers"]
+    p["ticker"] = normalized["tickers"][0] if normalized["tickers"] else ""
+    p["transactions"] = normalized["transactions"]
     p["options"] = normalized["options"]
     p["purchases"] = normalized["purchases"]
 
     analysis_inputs_changed = previous_tickers != normalized["tickers"] or previous_options != normalized["options"]
     if analysis_inputs_changed:
         p["analysis"] = None
-        p["snapshot"] = {}
-    elif isinstance(p.get("snapshot"), dict):
-        for ticker, snap in p["snapshot"].items():
-            current = (snap or {}).get("current")
-            snap["pct"] = percent_change(normalized["purchases"].get(ticker), current) if current is not None else None
+    # Recompute snapshot (positions/P&L derived from transactions + latest price).
+    try:
+        p["snapshot"] = _build_holding_snapshot(p)
+    except Exception:
+        pos = _position_from_transactions(p.get("transactions") or [])
+        if isinstance(p.get("snapshot"), dict):
+            for ticker, snap in p["snapshot"].items():
+                p["snapshot"][ticker] = _snapshot_entry(pos, (snap or {}).get("current"))
     p["updatedAt"] = _utcnow_iso()
     _write(posts)
     return jsonify(_normalize_post_for_client(p))
@@ -1131,6 +1609,131 @@ def delete_post(pid):
         return jsonify({"message": "Not found"}), 404
     _write(new_posts)
     return jsonify({"message": "deleted"})
+
+# -------------------
+# Transactions (buy/sell history per holding)
+# -------------------
+def _save_holding_after_txn_change(pid: str, holding: Dict[str, Any], posts: List[Dict[str, Any]]):
+    """Recompute back-compat purchases + snapshot for a holding and persist."""
+    pos = _position_from_transactions(holding.get("transactions") or [])
+    ticker = (holding.get("tickers") or [holding.get("ticker")] or [None])[0]
+    holding["purchases"] = {ticker: pos["avgCost"]} if (ticker and pos.get("avgCost")) else {}
+    try:
+        holding["snapshot"] = _build_holding_snapshot(holding)
+    except Exception:
+        pass
+    holding["updatedAt"] = _utcnow_iso()
+    _write(posts)
+
+@app.post("/api/stocks/<pid>/transactions")
+def add_transaction(pid):
+    payload = request.get_json(force=True, silent=True) or {}
+    posts = _read()
+    p = _find(posts, pid)
+    if not p:
+        return jsonify({"message": "Not found"}), 404
+    cleaned = _normalize_transactions([payload])
+    if not cleaned:
+        return jsonify({"message": "Invalid transaction. Need type (buy/sell), shares > 0, price >= 0."}), 400
+    p.setdefault("transactions", []).append(cleaned[0])
+    _save_holding_after_txn_change(pid, p, posts)
+    return jsonify(_normalize_post_for_client(p)), 201
+
+@app.put("/api/stocks/<pid>/transactions/<txid>")
+def update_transaction(pid, txid):
+    payload = request.get_json(force=True, silent=True) or {}
+    posts = _read()
+    p = _find(posts, pid)
+    if not p:
+        return jsonify({"message": "Not found"}), 404
+    txns = p.get("transactions") or []
+    idx = next((i for i, t in enumerate(txns) if str(t.get("id")) == str(txid)), None)
+    if idx is None:
+        return jsonify({"message": "Transaction not found"}), 404
+    merged = dict(txns[idx])
+    merged.update(payload)
+    merged["id"] = str(txid)
+    cleaned = _normalize_transactions([merged])
+    if not cleaned:
+        return jsonify({"message": "Invalid transaction."}), 400
+    txns[idx] = cleaned[0]
+    p["transactions"] = txns
+    _save_holding_after_txn_change(pid, p, posts)
+    return jsonify(_normalize_post_for_client(p))
+
+@app.delete("/api/stocks/<pid>/transactions/<txid>")
+def delete_transaction(pid, txid):
+    posts = _read()
+    p = _find(posts, pid)
+    if not p:
+        return jsonify({"message": "Not found"}), 404
+    txns = p.get("transactions") or []
+    new_txns = [t for t in txns if str(t.get("id")) != str(txid)]
+    if len(new_txns) == len(txns):
+        return jsonify({"message": "Transaction not found"}), 404
+    p["transactions"] = new_txns
+    _save_holding_after_txn_change(pid, p, posts)
+    return jsonify(_normalize_post_for_client(p))
+
+# -------------------
+# Comments (freeform notes per holding; do not affect the position)
+# -------------------
+@app.post("/api/stocks/<pid>/comments")
+def add_comment(pid):
+    payload = request.get_json(force=True, silent=True) or {}
+    posts = _read()
+    p = _find(posts, pid)
+    if not p:
+        return jsonify({"message": "Not found"}), 404
+    cleaned = _normalize_comments([{**payload, "status": "pending"}])
+    if not cleaned:
+        return jsonify({"message": "Comment text is required."}), 400
+    p.setdefault("comments", []).append(cleaned[0])
+    p["updatedAt"] = _utcnow_iso()
+    _write(posts)
+    return jsonify(_normalize_post_for_client(p)), 201
+
+@app.put("/api/stocks/<pid>/comments/<cid>")
+def update_comment(pid, cid):
+    payload = request.get_json(force=True, silent=True) or {}
+    posts = _read()
+    p = _find(posts, pid)
+    if not p:
+        return jsonify({"message": "Not found"}), 404
+    comments = p.get("comments") or []
+    idx = next((i for i, c in enumerate(comments) if str(c.get("id")) == str(cid)), None)
+    if idx is None:
+        return jsonify({"message": "Comment not found"}), 404
+    merged = dict(comments[idx])
+    if "text" in payload:
+        merged["text"] = payload.get("text")
+    if "status" in payload:
+        merged["status"] = payload.get("status")
+    merged["id"] = str(cid)
+    merged["updatedAt"] = _utcnow_iso()
+    cleaned = _normalize_comments([merged])
+    if not cleaned:
+        return jsonify({"message": "Invalid comment."}), 400
+    comments[idx] = cleaned[0]
+    p["comments"] = comments
+    p["updatedAt"] = _utcnow_iso()
+    _write(posts)
+    return jsonify(_normalize_post_for_client(p))
+
+@app.delete("/api/stocks/<pid>/comments/<cid>")
+def delete_comment(pid, cid):
+    posts = _read()
+    p = _find(posts, pid)
+    if not p:
+        return jsonify({"message": "Not found"}), 404
+    comments = p.get("comments") or []
+    new_comments = [c for c in comments if str(c.get("id")) != str(cid)]
+    if len(new_comments) == len(comments):
+        return jsonify({"message": "Comment not found"}), 404
+    p["comments"] = new_comments
+    p["updatedAt"] = _utcnow_iso()
+    _write(posts)
+    return jsonify(_normalize_post_for_client(p))
 
 @app.post("/api/analyze/<pid>")
 def analyze_post(pid):
@@ -1150,17 +1753,7 @@ def analyze_post(pid):
     except Exception as e:
         analysis = {"summary": f"Analysis failed: {e}", "per_ticker": {}}
 
-    snapshot = {}
-    for t in tickers:
-        cur = get_latest_price(t)
-        buy = None
-        if isinstance(p.get("purchases"), dict):
-            # if multiple, per-ticker
-            buy = p["purchases"].get(t)
-        elif isinstance(p.get("purchases"), (int, float)):
-            buy = p["purchases"]
-        pct = percent_change(buy, cur) if buy is not None else None
-        snapshot[t] = {"current": cur, "pct": pct}
+    snapshot = _build_holding_snapshot(p)
 
     p["analysis"] = {
         "updatedAt": _utcnow_iso(),
@@ -1249,6 +1842,14 @@ def stop_post(pid):
             JOB_STATE[pid] = 'stopped'
             _set_state(pid, 'stopped')
             return jsonify(_get_job_states())
+    # Not in the live queue/worker (e.g. orphaned by a server restart). If the
+    # holding is still persisted as running/queued, force it to stopped so the
+    # UI can recover.
+    posts = _read()
+    p = _find(posts, pid)
+    state = (((p or {}).get("analysis") or {}).get("progress") or {}).get("state")
+    if state in ("running", "queued"):
+        _set_state(pid, 'stopped')
     return jsonify(_get_job_states())
 
 @app.get("/api/queue/status")
@@ -1312,19 +1913,7 @@ def refresh_snapshot(pid):
     if not p:
         return jsonify({"message": "Not found"}), 404
 
-    tickers = p.get("tickers") or []
-    snapshot = {}
-    for t in tickers:
-        cur = get_latest_price(t)
-        buy = None
-        if isinstance(p.get("purchases"), dict):
-            buy = (p.get("purchases") or {}).get(t)
-        elif isinstance(p.get("purchases"), (int, float)):
-            buy = p.get("purchases")
-        pct = percent_change(buy, cur) if buy is not None else None
-        snapshot[t] = {"current": cur, "pct": pct}
-
-    p["snapshot"] = snapshot
+    p["snapshot"] = _build_holding_snapshot(p)
     p["updatedAt"] = _utcnow_iso()
     _write(posts)
     return jsonify(_normalize_post_for_client(p))
@@ -1334,18 +1923,7 @@ def refresh_all_snapshots():
     posts = _read()
     refreshed = 0
     for post in posts:
-        tickers = post.get("tickers") or []
-        snapshot = {}
-        for ticker in tickers:
-            cur = get_latest_price(ticker)
-            buy = None
-            if isinstance(post.get("purchases"), dict):
-                buy = (post.get("purchases") or {}).get(ticker)
-            elif isinstance(post.get("purchases"), (int, float)):
-                buy = post.get("purchases")
-            pct = percent_change(buy, cur) if buy is not None else None
-            snapshot[ticker] = {"current": cur, "pct": pct}
-        post["snapshot"] = snapshot
+        post["snapshot"] = _build_holding_snapshot(post)
         post["updatedAt"] = _utcnow_iso()
         refreshed += 1
     _write(posts)
@@ -1534,17 +2112,12 @@ def analyze_post_stream(pid):
                         pp["analysis"]["updatedAt"] = _utcnow_iso()
                     _update_post(pid, upd)
 
-                    # Update snapshot for this ticker
+                    # Update snapshot for this ticker (position/P&L from transactions)
                     cur = get_latest_price(t)
-                    buy = None
-                    if isinstance(p.get("purchases"), dict):
-                        buy = (p.get("purchases") or {}).get(t)
-                    elif isinstance(p.get("purchases"), (int, float)):
-                        buy = p.get("purchases")
-                    pct = percent_change(buy, cur) if buy is not None else None
 
                     def upd_snap(pp):
-                        pp.setdefault("snapshot", {})[t] = {"current": cur, "pct": pct}
+                        pos = _position_from_transactions(pp.get("transactions") or [])
+                        pp.setdefault("snapshot", {})[t] = _snapshot_entry(pos, cur)
                         pp["updatedAt"] = _utcnow_iso()
                     _update_post(pid, upd_snap)
                     _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=len(tickers))
@@ -1630,12 +2203,29 @@ def chart():
     interval = request.args.get("interval") or "1d"
     return jsonify(get_chart_data(ticker, period, interval))
 
+@app.get("/api/fundamentals/<ticker>")
+def fundamentals(ticker):
+    """Normalized fundamental metrics (yfinance) for a single ticker, cached ~1h."""
+    tk = (ticker or "").upper().strip()
+    if not tk:
+        return jsonify({"ticker": "", "metrics": {}, "available": False, "error": "No ticker"})
+    force = _coerce_bool(request.args.get("refresh"), False)
+    now = time.time()
+    cached = _FUND_CACHE.get(tk)
+    if cached and not force and (now - cached[0] < _FUND_TTL):
+        return jsonify(cached[1])
+    data = get_fundamentals(tk)
+    # Only cache successful lookups so transient errors retry.
+    if data.get("available"):
+        _FUND_CACHE[tk] = (now, data)
+    return jsonify(data)
+
 # -------------------
 # Frontend
 # -------------------
 @app.get("/")
 def home():
-    return render_template("index.html")
+    return redirect(url_for("serve_stock"))
 
 @app.get("/static/<path:fn>")
 def serve_static(fn):
@@ -1673,6 +2263,35 @@ def auto_regen_loop():
 def start_regen_thread():
     t = threading.Thread(target=auto_regen_loop, daemon=True)
     t.start()
+
+def _recover_orphaned_jobs():
+    """Reset holdings left in a non-terminal state by a restart.
+
+    The job queue lives only in memory, so after a restart it is empty — but a
+    holding that was mid-analysis still has analysis.progress.state == 'running'
+    (or 'queued') persisted in stocks.json. With no live worker behind it, that
+    status is stuck forever (can't continue, can't stop). Flip any such orphan
+    to 'stopped' on startup so the UI is usable again.
+    """
+    try:
+        posts = _read()
+        changed = False
+        for p in posts:
+            ana = p.get("analysis")
+            if not isinstance(ana, dict):
+                continue
+            progress = ana.get("progress")
+            if isinstance(progress, dict) and progress.get("state") in ("running", "queued"):
+                progress["state"] = "stopped"
+                progress["currentTicker"] = None
+                progress["updatedAt"] = _utcnow_iso()
+                ana["updatedAt"] = _utcnow_iso()
+                p["updatedAt"] = _utcnow_iso()
+                changed = True
+        if changed:
+            _write(posts)
+    except Exception:
+        pass
 
 def job_worker_loop():
     while True:
@@ -1739,16 +2358,38 @@ def job_worker_loop():
                     if current_state not in ('stopped', 'error'):
                         _set_state(pid, 'done')
 
+def _asset_version() -> str:
+    """A cache-busting stamp that changes whenever app.js/app.css change.
+
+    Appended as ?v=... to the static asset URLs so a deploy is picked up
+    immediately instead of the browser serving a stale cached bundle.
+    """
+    latest = 0.0
+    for fn in ("app.js", "app.css"):
+        try:
+            latest = max(latest, os.path.getmtime(os.path.join(app.static_folder, fn)))
+        except OSError:
+            pass
+    return str(int(latest))
+
 # Stock page route
 @app.route('/stock')
 def serve_stock():
-    return render_template('stock.html')
+    return render_template('stock.html', asset_v=_asset_version())
 
 @app.route('/stock.html')
 def serve_stock_html():
-    return render_template('stock.html')
+    return render_template('stock.html', asset_v=_asset_version())
 
 if __name__ == "__main__":
+    _ensure_accounts()
+    _recover_orphaned_jobs()
     start_regen_thread()
     threading.Thread(target=job_worker_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=5055, debug=True)
+else:
+    # Running under gunicorn or other WSGI server — start background threads here
+    _ensure_accounts()
+    _recover_orphaned_jobs()
+    start_regen_thread()
+    threading.Thread(target=job_worker_loop, daemon=True).start()

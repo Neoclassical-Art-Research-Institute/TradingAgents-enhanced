@@ -939,6 +939,7 @@ tr.dragging {
 dialog {
     width: min(1060px, calc(100vw - 24px));
     max-width: 1060px;
+    max-height: calc(100vh - 24px);
     border: none;
     padding: 0;
     background: transparent;
@@ -949,8 +950,18 @@ dialog::backdrop {
     backdrop-filter: blur(8px);
 }
 
+/* Lock the page behind an open modal so it can't scroll under the dialog
+   (the dialog lives in the top layer and the body would otherwise bleed-scroll,
+   which is especially confusing on mobile). */
+html:has(dialog[open]) {
+    overflow: hidden;
+}
+
 .modal {
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 24px);
 }
 
 .modal-wide,
@@ -988,7 +999,8 @@ dialog::backdrop {
     padding: 22px 24px 26px;
     display: grid;
     gap: 18px;
-    max-height: min(76vh, 840px);
+    flex: 1 1 auto;
+    min-height: 0;
     overflow: auto;
 }
 
@@ -1045,7 +1057,7 @@ dialog::backdrop {
 }
 
 .presetGrid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .presetCard,
@@ -1101,12 +1113,16 @@ dialog::backdrop {
 }
 
 .analystGrid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
+/* Analyst tiles are just a checkbox + short label — keep them compact so they
+   don't waste a full row each. */
 .checkTile {
-    justify-content: center;
     align-items: center;
+    gap: 9px;
+    padding: 10px 12px;
+    border-radius: 12px;
 }
 
 .toggleStack {
@@ -1551,8 +1567,6 @@ pre.log {
 }
 
 @media (max-width: 980px) {
-    .presetGrid,
-    .analystGrid,
     .rowgrid {
         grid-template-columns: 1fr;
     }
@@ -1579,6 +1593,10 @@ pre.log {
     .pageShell {
         width: min(100vw - 22px, 1240px);
     }
+
+    /* nwHead Lock/Edit buttons collapse to emoji-only on mobile. */
+    .nwHeadActions .btnTxt { display: none; }
+    .nwHeadActions .iconBtn { padding: 6px 9px; }
 
     .heroCopy,
     .heroPanel,
@@ -1648,8 +1666,22 @@ pre.log {
         gap: 6px;
     }
 
+    /* Keep the ⚙ settings button in the top-right corner instead of dropping it
+       onto its own (left-aligned) line, and let the title shrink beside it. */
     .chartHead {
-        flex-direction: column;
+        flex-direction: row;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    .chartTitleBlock { min-width: 0; }
+    .chartSettingsAnchor { flex: 0 0 auto; }
+    /* Collapse the button to just the ⚙ glyph to save width. */
+    .chartSettingsBtn { padding: 8px 10px; }
+    .chartSettingsBtn .btnTxt { display: none; }
+    /* Popover is right-anchored to the corner button; cap its width so it can
+       never run off either screen edge. */
+    .chartSettingsPopover {
+        max-width: min(300px, calc(100vw - 32px));
     }
 
     .chartSettingsPanel {
@@ -1686,6 +1718,22 @@ pre.log {
     .actions button {
         flex: 1 1 160px;
     }
+
+    /* Holding detail: keep Edit / Delete / Refresh / Analyze on one row.
+       The three icon buttons collapse to emoji-only and shrink to content;
+       Analyze keeps its (shortened) label and takes the remaining width. */
+    #detailDlg .actions {
+        flex-wrap: nowrap;
+        gap: 6px;
+    }
+    #detailDlg .actions .btnTxt { display: none; }
+    #detailDlg .actions .iconActBtn {
+        flex: 0 0 auto;
+        min-width: 44px;
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+    #detailDlg .actions #dAnalyze { flex: 1 1 auto; }
 
     .fabDock {
         --fab-halo-size: 232px;
@@ -1786,4 +1834,691 @@ pre.log {
     .watchlistTagRail {
         gap: 5px;
     }
+}
+
+/* ============================================================
+   Portfolio tracker rework
+   ============================================================ */
+:root {
+    --pos: var(--buy);
+    --neg: var(--sell);
+}
+.pos { color: var(--pos); }
+.neg { color: var(--neg); }
+.flat { color: var(--muted); }
+
+/* Header: brand | account tabs (flex) | actions — one compact row */
+.bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 0;
+}
+.brandWrap { flex: 0 0 auto; }
+.headActions {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    align-items: center;
+}
+.headBtn { white-space: nowrap; }
+
+/* Account tabs (live in the header) */
+.accountTabs {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 2px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+}
+.accountTabs::-webkit-scrollbar { display: none; }
+.accountTab {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 6px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color .15s, box-shadow .15s, transform .05s;
+}
+.accountTab:hover { border-color: var(--border-strong); }
+.accountTab:active { transform: translateY(1px); }
+.accountTab.is-active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-sm);
+}
+.accountTabName { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+.accountTabSub { font-size: 12px; color: var(--muted); }
+.accountTabSub.pos { color: var(--pos); }
+.accountTabSub.neg { color: var(--neg); }
+.accountTabAdd {
+    align-self: stretch;
+    justify-content: center;
+    flex-direction: row;
+    align-items: center;
+    color: var(--muted);
+    border-style: dashed;
+    font-weight: 600;
+}
+
+/* Two-pane workspace: net-worth (major, left) + side panel (right, scrolls) */
+.portfolioLayout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.92fr);
+    gap: 18px;
+    align-items: stretch;
+    height: calc(100dvh - 84px);
+    min-height: 460px;
+    margin-top: 4px;
+}
+.networthPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-md);
+    padding: 18px 20px;
+}
+.sidePanel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-width: thin;
+}
+.sideBubbles { display: grid; gap: 14px; }
+.portfolioEyebrow { text-transform: uppercase; letter-spacing: .1em; font-size: 11px; color: var(--accent-strong); }
+.iconBtn { min-height: 36px; padding: 6px 12px; }
+
+/* Net-worth hero + major chart */
+.nwHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+/* Lock + Edit buttons: always on one line, flushed to the right. */
+.nwHeadActions { display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 6px; flex: 0 0 auto; }
+.nwHeadActions .iconBtn { white-space: nowrap; }
+.nwValue { font-size: clamp(30px, 4.4vw, 46px); font-weight: 700; letter-spacing: -0.03em; font-family: "Space Grotesk", sans-serif; line-height: 1.05; margin-top: 2px; }
+.nwSub { display: flex; gap: 8px; align-items: baseline; font-size: 14px; font-weight: 600; margin-top: 4px; flex-wrap: wrap; }
+.nwSub .muted { font-weight: 500; }
+.nwBreak { display: flex; gap: 8px; flex-wrap: wrap; }
+.nwChip { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface-strong); font-weight: 600; font-size: 13px; }
+.nwChipLabel { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.nwChipBtn { cursor: pointer; color: var(--text); }
+.nwChipBtn:hover { border-color: var(--border-strong); }
+.nwChipEdit { font-size: 11px; color: var(--accent); margin-left: 2px; }
+.nwRanges { display: flex; gap: 6px; flex-wrap: wrap; }
+.nwControls { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nwRange { padding: 5px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.nwRange.is-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.nwRange:disabled { opacity: 0.4; cursor: not-allowed; }
+.nwModeToggle { flex: 0 0 auto; }
+.nwModeToggle .segmentOption span { padding: 5px 14px; font-size: 13px; }
+.nwChipBtn { cursor: pointer; }
+.coverMsg { font-size: 13px; line-height: 1.55; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--danger-soft); color: var(--sell); }
+.nwChartWrap { flex: 1 1 auto; min-height: 220px; position: relative; }
+.nwChartWrap canvas { width: 100%; height: 100%; display: block; }
+.nwChartNote { font-size: 12px; }
+.watchBig { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 8px 0; }
+.watchBigTile { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-strong); padding: 18px 12px; text-align: center; display: grid; gap: 4px; }
+.watchBigTile span { font-size: 34px; font-weight: 700; font-family: "Space Grotesk", sans-serif; }
+.watchBigTile small { color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+
+.panelCard {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 16px;
+}
+.panelCard.emptyPanel { display: grid; gap: 12px; justify-items: start; }
+.panelCardHead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.panelCardHead strong { font-size: 14px; }
+
+/* Summary stat tiles */
+.statHero {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: linear-gradient(160deg, rgba(255,255,255,0.6), rgba(255,255,255,0.25));
+    box-shadow: var(--shadow-sm);
+    padding: 16px 18px;
+    display: grid;
+    gap: 4px;
+}
+.statHero .statLabel { font-size: 12px; color: var(--muted); }
+.statHeroValue { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.03em; font-family: "Space Grotesk", sans-serif; }
+.statHeroPnl { font-size: 14px; font-weight: 600; }
+.statHeroPnl small { font-weight: 500; opacity: 0.85; }
+.statGrid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+.statGrid-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.statTile {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: 10px 12px;
+    display: grid;
+    gap: 3px;
+}
+.statLabel { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.statValue { font-size: 16px; font-weight: 600; }
+
+/* Allocation bars */
+.allocationHost { display: grid; gap: 9px; }
+.allocEmpty { font-size: 13px; }
+.allocRow { display: grid; grid-template-columns: minmax(86px, auto) 1fr auto; gap: 10px; align-items: center; }
+.allocMeta { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.allocDot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.allocTk { font-weight: 600; font-size: 13px; }
+.allocPct { font-size: 12px; }
+.allocBarTrack { height: 8px; border-radius: 99px; background: var(--surface-muted); overflow: hidden; }
+.allocBarFill { height: 100%; border-radius: 99px; }
+.allocVal { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.allocViewToggle .segmentOption span { padding: 4px 11px; font-size: 12px; }
+
+/* Allocation treemap (List/Map toggle, "Map" mode): squarified rectangles sized
+   by position weight, tinted green/red by unrealized P&L%. */
+.allocationHost.isMap { position: relative; height: 230px; display: block; }
+.treemapCell {
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px solid;
+    border-radius: 9px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 1px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: filter 0.15s ease, transform 0.15s ease;
+}
+.treemapCell:hover { filter: brightness(1.07); transform: scale(1.012); z-index: 2; }
+.treemapCell.isCash { cursor: default; }
+.treemapCell.isCash:hover { filter: none; transform: none; }
+.tmTk { font-weight: 700; font-size: 12px; letter-spacing: -0.01em; line-height: 1.2; }
+.tmWeight { font-size: 10.5px; color: var(--muted); line-height: 1.2; }
+.tmPnl { font-size: 10.5px; font-weight: 600; line-height: 1.2; }
+
+.accountChartWrap { width: 100%; }
+.accountChartWrap canvas { width: 100%; height: 150px; display: block; }
+
+/* Holdings panel */
+.holdingsPanel {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+    padding: 16px 18px 18px;
+}
+.holdingsHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; position: sticky; top: -2px; background: var(--surface); z-index: 1; padding-top: 2px; }
+.holdingsHeadMain { min-width: 0; }
+.holdingsHead h2 { font-size: 18px; letter-spacing: -0.02em; }
+.holdingsActions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; flex-wrap: wrap; }
+.holdingsSearch { width: clamp(120px, 40vw, 200px); }
+.holdingsSearch input { padding: 8px 12px; }
+.iconBtn { padding: 8px 11px; line-height: 1; font-size: 15px; }
+
+/* Compact holding rows (fit the narrow side panel; no horizontal overflow) */
+.holdingTable { display: flex; flex-direction: column; }
+.holdingRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 11px 10px;
+    border-bottom: 1px solid var(--border);
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    transition: background .12s;
+}
+.holdingRow:last-child { border-bottom: none; }
+.holdingRow:hover { background: rgba(22, 93, 255, 0.05); }
+.holdingRow.rowAccent.buy { border-left-color: var(--buy); }
+.holdingRow.rowAccent.sell { border-left-color: var(--sell); }
+.holdingRow.rowAccent.hold { border-left-color: var(--hold); }
+.hMain { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hTopline { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.htk { font-weight: 700; letter-spacing: -0.01em; font-size: 15px; }
+.hSub { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hStats { flex: 0 0 auto; text-align: right; display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+.hPrimary { font-weight: 600; font-size: 14px; }
+.hSecondary { font-size: 12px; }
+.holdingAddRow { justify-content: center; cursor: pointer; }
+.holdingAddRow .htk { color: var(--accent); font-size: 14px; font-weight: 600; }
+.holdingAddRow:hover { background: rgba(22, 93, 255, 0.08); }
+.holdingAddRow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Detail dialog: sub tabs + panels */
+.detailTabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.detailTab {
+    padding: 9px 14px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+}
+.detailTab.is-active { color: var(--text); border-bottom-color: var(--accent); }
+.detailPanel { display: grid; gap: 16px; }
+.detailPanel[hidden] { display: none; }
+.overviewSplit { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* Position card */
+.posRow { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed var(--border); }
+.posRow:last-child { border-bottom: none; }
+.posLabel { color: var(--muted); font-size: 13px; }
+.posValue { font-weight: 600; font-variant-numeric: tabular-nums; }
+.posHint { font-size: 12px; padding-top: 8px; }
+
+/* Trades & P&L */
+.txnHead, .fundHead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.buyBtn { color: var(--buy); }
+.sellBtn { color: var(--sell); }
+.tradeChartWrap { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-strong); padding: 6px; }
+.tradeChartWrap canvas { width: 100%; height: 270px; display: block; }
+.tradeChartLegend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
+.tlg { display: inline-flex; align-items: center; gap: 6px; }
+.tlgSwatch { width: 16px; height: 10px; border-radius: 2px; display: inline-block; }
+.tlgSwatch.line { background: var(--text); height: 3px; }
+.tlgSwatch.profit { background: repeating-linear-gradient(90deg, var(--accent) 0 4px, transparent 4px 7px); height: 3px; }
+.tlgSwatch.buy { background: color-mix(in srgb, var(--accent) 55%, transparent); border: 1px solid var(--accent); }
+.tlgSwatch.sell { background: color-mix(in srgb, var(--buy) 45%, transparent); border: 1px solid var(--buy); }
+
+.txnList { display: grid; gap: 6px; }
+.txnEmpty { padding: 12px; text-align: center; }
+.txnItem {
+    display: grid;
+    grid-template-columns: 56px 1fr auto auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    font-size: 13px;
+}
+.txnBadge { font-size: 11px; font-weight: 700; text-align: center; padding: 3px 6px; border-radius: 6px; letter-spacing: .04em; }
+.txnBadge.buy { background: var(--accent-soft); color: var(--accent-strong); }
+.txnBadge.sell { background: var(--danger-soft); color: var(--sell); }
+.txnQty { font-variant-numeric: tabular-nums; }
+.txnTotal { font-weight: 600; font-variant-numeric: tabular-nums; }
+.txnRowActions { display: flex; gap: 4px; }
+.iconBtn { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; font-size: 12px; cursor: pointer; color: var(--text); }
+.iconBtn:hover { border-color: var(--border-strong); }
+.txnPreview { font-size: 13px; color: var(--text); min-height: 18px; }
+
+/* Soft keyword lock (read/edit mode) */
+.lockBtn.is-locked { border-color: var(--sell); color: var(--sell); }
+.lockBtn.is-unlocked { border-color: var(--accent-strong); color: var(--accent-strong); }
+
+/* Un-handled comment indicator on a holding row */
+.commentDot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-left: 4px;
+    border-radius: 50%;
+    background: var(--sell);
+    vertical-align: middle;
+    box-shadow: 0 0 0 2px var(--surface);
+}
+
+/* Comments card in the holding detail */
+.commentsCard { margin-top: 14px; }
+.commentComposer { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; margin-bottom: 12px; }
+.commentComposer textarea {
+    width: 100%;
+    resize: vertical;
+    min-height: 40px;
+    font: inherit;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+}
+.commentList { display: grid; gap: 8px; }
+.commentEmpty { font-size: 13px; }
+.commentItem {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: start;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    font-size: 13px;
+}
+.commentItem.status-pending { border-left-color: var(--sell); }
+.commentItem.status-accepted { border-left-color: var(--accent-strong); }
+.commentItem.status-discarded { opacity: .6; border-left-color: var(--border-strong); }
+.commentItem.status-discarded .commentText { text-decoration: line-through; }
+.commentText { white-space: pre-wrap; word-break: break-word; }
+.commentMeta { font-size: 11px; margin-top: 4px; }
+.commentActions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* Segmented toggle (txn type, account type) */
+.segmentToggle { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.segmentOption { position: relative; }
+.segmentOption input { position: absolute; opacity: 0; pointer-events: none; }
+.segmentOption span { display: block; padding: 9px 18px; cursor: pointer; font-size: 14px; font-weight: 600; color: var(--muted); }
+.segmentOption input:checked + span { background: var(--accent); color: #fff; }
+
+/* Fundamentals */
+.fundTopline { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.fundGroups { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+.fundGroup { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); overflow: hidden; }
+.fundGroupHead { padding: 9px 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--accent-strong); background: rgba(22,93,255,0.05); border-bottom: 1px solid var(--border); }
+.fundTable { width: 100%; border-collapse: collapse; }
+.fundTable td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.fundTable tr:last-child td { border-bottom: none; }
+.fmName { color: var(--muted); }
+.fmVal { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fmBench { text-align: right; width: 1%; white-space: nowrap; }
+.fundFoot, .fundLoading, .fundEmpty { font-size: 12px; margin-top: 12px; }
+.fundLoading, .fundEmpty { padding: 16px 0; }
+
+/* Pill color variants (fundamentals + guide) */
+.pill-green { background: #EAF3DE; color: #27500A; }
+.pill-amber { background: #FAEEDA; color: #633806; }
+.pill-red   { background: #FCEBEB; color: #791F1F; }
+.pill-blue  { background: #E6F1FB; color: #0C447C; }
+.pill-gray  { background: var(--surface-muted); color: var(--muted); }
+
+/* Metric guide */
+.guideModal { width: 100%; }
+.guideTickerRow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; padding: 12px 14px; border: 1px solid var(--accent-soft); background: rgba(22, 93, 255, 0.05); border-radius: var(--radius-md); }
+.guideTickerRow input { width: auto; flex: 0 1 140px; padding: 9px 12px; text-transform: uppercase; }
+.guideTickerRow button { flex: 0 0 auto; padding: 9px 16px; white-space: nowrap; }
+.guideTickerRow #mgTickerStatus { flex: 1 1 180px; font-size: 13px; }
+.guideTickerRow #mgTickerStatus.is-ok { color: var(--accent-strong); font-weight: 500; }
+.guideTickerRow #mgTickerStatus.is-error { color: var(--sell); }
+.mgVal { font-weight: 600; color: var(--accent-strong); }
+.mgVal.tone-green { color: #27500A; }
+.mgVal.tone-amber { color: #633806; }
+.mgVal.tone-red   { color: #791F1F; }
+.mgVal.tone-blue  { color: #0C447C; }
+.mgVal.tone-gray  { color: var(--muted); }
+.mgTabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.mgTab { padding: 8px 14px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); font-size: 13px; font-weight: 500; cursor: pointer; }
+.mgTab.is-active { color: var(--text); border-bottom-color: var(--accent); }
+.mgPanel { display: none; }
+.mgPanel.is-active { display: grid; gap: 12px; }
+.mgCard { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); padding: 14px 16px; }
+.mgCardHead { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.mgName { font-weight: 600; font-size: 15px; }
+.mgAbbr { font-family: ui-monospace, monospace; font-size: 12px; background: var(--surface-muted); padding: 2px 8px; border-radius: 5px; color: var(--muted); }
+.mgFormula { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); background: var(--surface-muted); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+.mgDesc { font-size: 13px; color: var(--text); line-height: 1.55; margin-bottom: 10px; }
+.mgPills { display: flex; gap: 6px; flex-wrap: wrap; }
+.mgCalc { border: 1px solid var(--accent-soft); background: rgba(22,93,255,0.04); border-radius: var(--radius-md); padding: 14px 16px; display: grid; gap: 6px; }
+.mgCalcHead { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.mgCalc label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.mgCalc output { font-weight: 600; color: var(--text); }
+.mgCalc input[type=range] { width: 100%; accent-color: var(--accent); }
+.mgCalcResult { margin-top: 8px; font-weight: 600; font-size: 15px; }
+.mgCheatScroll { overflow-x: auto; }
+.mgCheatTable { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 520px; }
+.mgCheatTable th { text-align: left; padding: 8px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border-strong); }
+.mgCheatTable td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.mgcMetric { font-weight: 600; }
+.mgcGood { color: #27500A; }
+.mgcWarn { color: #791F1F; }
+.mgNote { margin-top: 14px; font-size: 13px; color: var(--muted); border-left: 3px solid var(--accent); padding: 8px 12px; background: rgba(22,93,255,0.04); }
+
+/* Hamburger menu button */
+.menuBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    flex: 0 0 auto;
+}
+.hamburgerIcon {
+    display: block;
+    position: relative;
+    width: 18px;
+    height: 2px;
+    background: currentColor;
+    border-radius: 2px;
+}
+.hamburgerIcon::before,
+.hamburgerIcon::after {
+    content: '';
+    display: block;
+    position: absolute;
+    left: 0;
+    width: 18px;
+    height: 2px;
+    background: currentColor;
+    border-radius: 2px;
+}
+.hamburgerIcon::before { top: -5px; }
+.hamburgerIcon::after { top: 5px; }
+
+/* Side drawer */
+.drawerOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 99;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s;
+}
+.drawerOverlay.is-open {
+    opacity: 1;
+    pointer-events: auto;
+}
+.sideDrawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(280px, 85vw);
+    background: var(--surface, #fff);
+    border-left: 1px solid rgba(20, 32, 50, 0.1);
+    box-shadow: -4px 0 32px rgba(0, 0, 0, 0.14);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.sideDrawer.is-open { transform: translateX(0); }
+.sideDrawerHead {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(20, 32, 50, 0.08);
+}
+.sideDrawerBody {
+    padding: 16px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    flex: 1;
+}
+.sideDrawerSection {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px;
+}
+.sideDrawerSectionLabel {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+.sideDrawerDivider {
+    flex: 1 1 auto;
+    height: 1px;
+    background: rgba(20, 32, 50, 0.12);
+}
+button.sideDrawerBtn {
+    width: 100%;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    justify-content: flex-start;
+    text-align: left;
+    padding: 11px 16px;
+    font-size: 14px;
+    color: var(--text);
+    transition: background 0.14s ease;
+}
+button.sideDrawerBtn:hover {
+    transform: none;
+    box-shadow: none;
+    background: rgba(22, 93, 255, 0.08);
+}
+button.sideDrawerBtn:active { transform: none; }
+.sideDrawerStatus {
+    display: block;
+    width: 100%;
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    background: rgba(20, 32, 50, 0.04);
+    border-radius: 0;
+}
+.sideDrawerFoot {
+    flex: 0 0 auto;
+    border-top: 1px solid rgba(20, 32, 50, 0.08);
+}
+
+/* Desktop: lock to viewport height, no page scroll */
+@media (min-width: 981px) {
+    body { height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+    .pageShell { flex: 1; min-height: 0; overflow: hidden; padding-bottom: 0; }
+    .portfolioLayout { height: calc(100% - 8px); margin-top: 0; }
+}
+
+/* Tablet */
+@media (max-width: 980px) {
+    /* Stack: net worth on top, side panel below; use normal page scroll */
+    .portfolioLayout { grid-template-columns: 1fr; height: auto; min-height: 0; padding-bottom: 48px; }
+    .sidePanel { overflow: visible; padding-right: 0; }
+    .networthPanel { min-height: 360px; }
+    .nwChartWrap { min-height: 240px; height: 280px; flex: 0 0 auto; }
+    .holdingsHead { position: static; }
+    .statGrid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+}
+
+/* Phone */
+@media (max-width: 720px) {
+    /* Header: brand + account tabs + hamburger inline on a single row */
+    .bar { display: flex; align-items: center; gap: 10px; }
+    .brandWrap { flex: 0 0 auto; }
+    .menuBtn { flex: 0 0 auto; }
+    .accountTabs { flex: 1 1 auto; min-width: 0; padding-bottom: 0; }
+
+    .holdingsHead { flex-direction: row; flex-wrap: nowrap; align-items: center; }
+    .holdingsHeadMain { flex: 0 0 auto; }
+    .holdingsActions { flex: 1 1 auto; justify-content: flex-end; flex-wrap: nowrap; }
+    .holdingsSearch { width: auto; flex: 1 1 auto; min-width: 0; }
+    .fundGroups { grid-template-columns: 1fr; }
+    .overviewSplit { grid-template-columns: 1fr; }
+    .nwValue { font-size: clamp(28px, 9vw, 38px); }
+    .nwChartWrap { height: 240px; }
+
+    /* Detail meta grid: 2 columns, compact metrics */
+    .detailMetaGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .detailMetric { padding: 10px 12px; }
+    .detailMetric strong { font-size: 11px; }
+    .detailMetric .metricValue { font-size: 14px; }
+    .detailMetric .muted { font-size: 11px; line-height: 1.3; margin-top: 2px; }
+
+    /* Detail chart footer: hide pan/zoom buttons (touch-navigable), compact selects */
+    .chartActionGroup { display: none; }
+    .chartFooter { flex-direction: row; flex-wrap: wrap; margin-top: 8px; gap: 8px; }
+    .chartFooterGroup { width: auto; }
+
+    .txnItem { grid-template-columns: 50px 1fr auto; grid-auto-rows: auto; }
+    .txnItem .txnDate { grid-column: 2; }
+    .txnItem .txnTotal { grid-column: 3; grid-row: 1; text-align: right; }
+    .txnItem .txnRowActions { grid-column: 1 / -1; justify-content: flex-end; }
+}
+
+/* Full-screen dialog sheets on phones — compact chrome to maximize content */
+@media (max-width: 720px) {
+    /* Contain dialog to viewport; override UA max-height and overflow:auto */
+    dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; overflow: hidden; }
+    /* Flex column: head → scrollable content → actions bar */
+    .modal { border-radius: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
+    /* Switch content from display:grid to flex-column to prevent grid align-content:stretch
+       from inflating the detailTabs row and making tab buttons 87px tall on short panels */
+    .modal .content { display: flex; flex-direction: column; max-height: none; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px 18px; gap: 14px; }
+    /* Actions stay pinned at the bottom of the flex column — no sticky needed */
+    .actions { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); gap: 8px; flex-wrap: wrap; }
+    .dialogHead { padding: 12px 16px; flex-shrink: 0; }
+    .dialogHead strong { font-size: 17px; }
+    .dialogHead .muted { font-size: 12px; }
+    .closeBtn { min-width: 36px; min-height: 36px; }
+    .actions button { flex: 1 1 auto; min-height: 42px; }
+    /* Detail sub-tabs: single compact horizontally-scrollable row.
+       flex-shrink:0 keeps the row from being crushed to 0 height by tall
+       panels (e.g. Overview) in the flex-column content area. */
+    .detailTabs { flex: 0 0 auto; gap: 2px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; align-items: flex-start; }
+    .detailTabs::-webkit-scrollbar { display: none; }
+    .detailTab { padding: 8px 11px; font-size: 13px; white-space: nowrap; }
+    .detailPanel { flex-shrink: 0; gap: 12px; }
+    .tradeChartWrap canvas { height: 230px; }
+
+    /* Stop nested flex/grid items from refusing to shrink (default min-width:auto),
+       which let the report config section grow ~2x wider than the dialog and
+       overflow horizontally. Allowing them to shrink keeps everything in-bounds. */
+    #detailDlg .content > *,
+    #detailDlg .detailPanel > *,
+    #detailDlg .formSection,
+    #detailDlg .formSection > *,
+    #detailDlg .rowgrid > *,
+    #detailDlg .toggleStack > * { min-width: 0; }
+
+    /* Report tab — config grids: compact, multi-column instead of one tile per row. */
+    .analystGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .presetGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .presetCard { padding: 11px 12px; gap: 4px; }
+    .presetName { font-size: 14px; }
+    .presetDesc { font-size: 12px; line-height: 1.4; }
+    .rowgrid-three .toggleStack { gap: 8px; }
+
+    /* Report tab — rendered markdown: let the dialog scroll (no nested 60vh box),
+       shrink type, and make wide tables/code scroll horizontally instead of
+       blowing out the layout. */
+    .md, pre.log { max-height: none; overflow: visible; }
+    .md { padding: 12px; font-size: 14px; overflow-wrap: anywhere; }
+    .md p, .md li, .md blockquote { font-size: 14px; }
+    .md table { display: block; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+    .md th, .md td { padding: 7px 9px; }
+    .md pre { padding: 12px; font-size: 12px; }
+    pre.log { font-size: 12px; }
 }

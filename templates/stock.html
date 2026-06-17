@@ -2,28 +2,26 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <title>TradingAgents Watch</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
     <script>
+        // Cache-busting version stamp injected by the server (mtime of app.js/app.css).
+        // Falls back to empty when opened as a file:// page (template not rendered).
+        var ASSET_V = "{{ asset_v|default('') }}";
+        if (/[{}]/.test(ASSET_V)) ASSET_V = '';
+        window.ASSET_V = ASSET_V;
         (function(){
             var hasServer = location.protocol === 'http:' || location.protocol === 'https:';
             var STATIC_BASE = hasServer ? '/static/' : '../static/';
+            var v = (hasServer && ASSET_V) ? ('?v=' + ASSET_V) : '';
             var l = document.createElement('link');
             l.rel = 'stylesheet';
-            l.href = STATIC_BASE + 'app.css';
+            l.href = STATIC_BASE + 'app.css' + v;
             document.head.appendChild(l);
-        })();
-    </script>
-    <script>
-        (function(){
-            try {
-                if (window.localStorage && localStorage.getItem('stock:heroDismissed') === '1') {
-                    document.documentElement.classList.add('hero-dismissed');
-                }
-            } catch {}
         })();
     </script>
     <script>
@@ -47,215 +45,259 @@
     <header>
         <div class="bar">
             <div class="brandWrap">
-                <div class="eyebrow">Research dashboard</div>
-                <div class="brand">TradingAgents Watch</div>
-                <div class="sub">Track conviction, refresh live prices, and queue deeper multi-agent research without living in raw JSON.</div>
+                <div class="brand">TA Watch</div>
             </div>
-            <div class="headActions">
-                <div class="searchWrap">
-                    <input id="searchBox" type="text" placeholder="Search watchlists, tickers, or notes" />
-                </div>
-                <div class="headerStatusRow">
-                    <span class="pill" id="serverState">Connecting...</span>
-                </div>
-            </div>
+            <nav id="accountTabs" class="accountTabs" aria-label="Accounts"></nav>
+            <button id="menuBtn" class="ghost menuBtn" type="button" aria-label="Open menu" title="Menu">
+                <span class="hamburgerIcon"></span>
+            </button>
         </div>
     </header>
 
+    <div id="drawerOverlay" class="drawerOverlay"></div>
+    <aside id="sideDrawer" class="sideDrawer" aria-hidden="true">
+        <div class="sideDrawerHead">
+            <strong>Menu</strong>
+            <button id="drawerClose" class="ghost closeBtn" type="button" aria-label="Close menu">×</button>
+        </div>
+        <div class="sideDrawerBody">
+            <div class="sideDrawerSection">
+                <span class="sideDrawerSectionLabel">Tools</span>
+                <span class="sideDrawerDivider"></span>
+            </div>
+            <button id="guideBtn" class="ghost sideDrawerBtn" type="button">Metric Guide</button>
+        </div>
+        <div class="sideDrawerFoot">
+            <span class="sideDrawerStatus" id="serverState">Connecting...</span>
+        </div>
+    </aside>
+
     <main class="pageShell">
-        <section id="heroSection" class="hero">
-            <div class="heroCopy">
-                <button id="heroDismissBtn" class="ghost heroDismissBtn" type="button" aria-label="Dismiss intro">Dismiss</button>
-                <div class="heroKicker">Smoother daily workflow</div>
-                <h1>Turn watchlists into repeatable TradingAgents runs.</h1>
-                <p id="serverNotice" class="heroNote">Checking server capabilities and default model setup...</p>
-                <div class="heroActions">
-                    <button id="heroAddBtn" class="primary">Create Watchlist</button>
-                    <button id="heroRunBtn" class="ghost">Queue All Ready Lists</button>
-                </div>
-            </div>
-            <aside class="heroPanel" aria-label="How this page works">
-                <div class="heroPanelHead">
-                    <strong>Workflow</strong>
-                    <span class="muted">Fast path first, advanced overrides when needed.</span>
-                </div>
-                <div class="heroSteps">
-                    <div class="stepCard">
-                        <span>1</span>
-                        <div>
-                            <strong>Define the basket</strong>
-                            <p>Add tickers, your thesis, and optional cost basis.</p>
+        <section class="portfolioLayout">
+            <section id="networthPanel" class="networthPanel" aria-label="Net worth"></section>
+
+            <aside id="sidePanel" class="sidePanel" aria-label="Holdings and statistics">
+                <div id="sideBubbles" class="sideBubbles"></div>
+                <section class="holdingsPanel">
+                    <div class="holdingsHead">
+                        <div class="holdingsHeadMain">
+                            <h2 id="holdingsTitle">Holdings</h2>
+                            <p id="holdingsMeta" class="sectionNote">Loading...</p>
+                        </div>
+                        <div class="holdingsActions">
+                            <div class="searchWrap holdingsSearch">
+                                <input id="searchBox" type="text" placeholder="Search holdings" />
+                            </div>
+                            <button id="refreshPricesBtn" class="ghost iconBtn" type="button" title="Refresh prices" aria-label="Refresh prices">⟳</button>
                         </div>
                     </div>
-                    <div class="stepCard">
-                        <span>2</span>
-                        <div>
-                            <strong>Choose a preset</strong>
-                            <p>Fast, balanced, or deeper analyst coverage without hand-editing config.</p>
-                        </div>
-                    </div>
-                    <div class="stepCard">
-                        <span>3</span>
-                        <div>
-                            <strong>Review the run</strong>
-                            <p>Watch price movement, queue state, summaries, and the full report in one place.</p>
-                        </div>
-                    </div>
-                </div>
+                    <div id="holdingsList" class="holdingsList"></div>
+                </section>
             </aside>
-        </section>
-
-        <section id="overviewCards" class="overviewCards" aria-label="Portfolio overview"></section>
-
-        <section class="feedShell">
-            <div class="sectionHead">
-                <div class="sectionHeadMain">
-                    <h2>Watchlists</h2>
-                    <p id="feedMeta" class="sectionNote">Loading watchlists...</p>
-                </div>
-                <div class="sectionHeadAside">
-                    <div class="watchlistPanelActions">
-                        <button id="resetOrderBtn" class="ghost" type="button" title="Switch back to timestamp sorting">Reset Order</button>
-                        <button id="heroToggleBtn" class="ghost" type="button" title="Show the intro panel again">Show Intro</button>
-                    </div>
-                    <div class="legend" aria-label="Suggestion legend">
-                        <span class="legendItem"><span class="legendDot buy"></span>Buy</span>
-                        <span class="legendItem"><span class="legendDot hold"></span>Hold</span>                        <span class="legendItem"><span class="legendDot sell"></span>Sell</span>
-                    </div>
-                </div>
-            </div>
-            <section id="feed" class="feed"></section>
         </section>
     </main>
 
-    <div id="fabDock" class="fabDock" aria-label="Quick actions">
-        <div id="fabPanel" class="fabPanel" aria-hidden="true">
-            <button id="fabRefreshBtn" class="fabAction ghost" type="button" data-fab-action="refresh">Refresh Prices</button>
-            <button id="fabQueueBtn" class="fabAction primary" type="button" data-fab-action="queue">Queue All</button>
-            <button id="fabNewBtn" class="fabAction ghost" type="button" data-fab-action="new">New Watchlist</button>
-        </div>
-        <button id="fabAdd" class="fab fabCore" title="Open quick actions" aria-label="Open quick actions" aria-controls="fabPanel" aria-expanded="false" aria-haspopup="true">+</button>
-    </div>
-
+    <!-- Add / edit holding -->
     <dialog id="postDlg">
         <div class="modal modal-wide">
-            <header class="dialogHead">
+            <header class="dialogHead dialogHead-split">
                 <div>
-                    <strong id="dlgTitle">New Watchlist</strong>
-                    <div class="muted">Use the preset controls for the common workflow. Raw overrides stay optional.</div>
+                    <strong id="dlgTitle">Add Holding</strong>
+                    <div class="muted">Track a single ticker. Record buys &amp; sells from the holding's detail view.</div>
                 </div>
+                <button id="cancelDlgX" class="ghost closeBtn" type="button" title="Close" aria-label="Close">x</button>
             </header>
             <div class="content">
                 <section class="formSection">
-                    <div class="formSectionHead">Basket</div>
-                    <div class="rowgrid">
-                        <div class="row">
-                            <label>Title</label>
-                            <input id="pTitle" type="text" placeholder="Semis momentum basket" />
-                        </div>
-                        <div class="row">
-                            <label>Tickers</label>
-                            <input id="pTickers" type="text" placeholder="NVDA, AMD, TSM" />
-                        </div>
-                    </div>
-                    <div class="row">
-                        <label>Thesis / notes</label>
-                        <textarea id="pDesc" placeholder="Why this basket matters, what you want TradingAgents to pressure-test, and any context worth preserving."></textarea>
-                    </div>
-                    <div class="row">
-                        <label>Purchase prices</label>
-                        <div class="muted">Optional. Use pairs like AAPL=182.50, MSFT=410 to calculate gain/loss alongside the recommendation.</div>
-                        <input id="pPurchases" type="text" placeholder="NVDA=903.5, AMD=174.2" />
-                    </div>
-                </section>
-
-                <section class="formSection">
-                    <div class="formSectionHead">TradingAgents setup</div>
-                    <div class="presetGrid">
-                        <label class="presetCard">
-                            <input type="radio" name="analysisPreset" value="fast" />
-                            <span class="presetName">Fast Pass</span>
-                            <span class="presetDesc">Quick directional read with lighter analyst coverage.</span>
-                        </label>
-                        <label class="presetCard">
-                            <input type="radio" name="analysisPreset" value="balanced" checked />
-                            <span class="presetName">Balanced</span>
-                            <span class="presetDesc">Default TradingAgents workflow for day-to-day review.</span>
-                        </label>
-                        <label class="presetCard">
-                            <input type="radio" name="analysisPreset" value="deep" />
-                            <span class="presetName">Deep Dive</span>
-                            <span class="presetDesc">Full coverage with more debate depth before a decision.</span>
-                        </label>
-                    </div>
-
+                    <div class="formSectionHead">Holding</div>
                     <div class="rowgrid rowgrid-three">
                         <div class="row">
-                            <label>Analysis date</label>
-                            <input id="pDate" type="date" />
+                            <label>Ticker</label>
+                            <input id="pTicker" type="text" placeholder="AAPL" autocomplete="off" />
                         </div>
                         <div class="row">
-                            <label>Debate rounds</label>
-                            <input id="pRounds" type="number" min="1" max="4" step="1" value="1" />
+                            <label>Account</label>
+                            <select id="pAccount"></select>
                         </div>
-                        <div class="toggleStack">
-                            <label class="toggleTile">
-                                <input id="pOnlineTools" type="checkbox" checked />
-                                <span>
-                                    <strong>Use online tools</strong>
-                                    <small>Prefer live data sources when available.</small>
-                                </span>
-                            </label>
-                            <label class="toggleTile">
-                                <input id="pDebug" type="checkbox" />
-                                <span>
-                                    <strong>Verbose logs</strong>
-                                    <small>Keep more reasoning detail in the report.</small>
-                                </span>
-                            </label>
+                        <div class="row">
+                            <label>Display name <span class="muted">(optional)</span></label>
+                            <input id="pTitle" type="text" placeholder="Apple Inc." />
                         </div>
                     </div>
-
                     <div class="row">
-                        <label>Analyst coverage</label>
-                        <div class="analystGrid">
-                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="market" checked />Market</label>
-                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="social" checked />Social</label>
-                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="news" checked />News</label>
-                            <label class="checkTile"><input class="pAnalyst" type="checkbox" value="fundamentals" checked />Fundamentals</label>
-                        </div>
+                        <label>Note / thesis <span class="muted">(optional)</span></label>
+                        <textarea id="pNote" placeholder="Why you hold this, target price, what to watch."></textarea>
                     </div>
-
-                    <details class="advancedBlock">
-                        <summary>Advanced overrides</summary>
-                        <div class="muted">Optional JSON merged into the request. Structured fields above win if the same key appears twice.</div>
-                        <textarea id="pOptions" placeholder='{"config":{"quick_think_llm":"gpt-4.1-mini"}}'></textarea>
-                    </details>
+                    <p class="muted formHint">TradingAgents analysis settings live in the holding's <strong>Report</strong> tab — open the holding to tune presets, analysts, and run an analysis.</p>
                 </section>
             </div>
             <div class="actions">
                 <button class="ghost" id="cancelDlg">Cancel</button>
-                <button id="saveDlg" class="primary">Save Watchlist</button>
+                <button id="saveDlg" class="primary">Save Holding</button>
             </div>
         </div>
     </dialog>
 
+    <!-- Holding detail -->
     <dialog id="detailDlg">
         <div class="modal modal-detail">
             <header class="dialogHead dialogHead-split">
                 <div>
-                    <strong id="dTitle">Watchlist</strong>
-                    <div id="dSubtitle" class="muted">Review pricing, queue status, and the latest TradingAgents output.</div>
+                    <strong id="dTitle">Holding</strong>
+                    <div id="dSubtitle" class="muted">Review price, position, fundamentals, and the latest TradingAgents output.</div>
                 </div>
                 <button id="dClose" class="ghost closeBtn" title="Close" aria-label="Close">x</button>
             </header>
             <div class="content" id="dContent"></div>
             <div class="actions">
-                <button id="dEdit">Edit</button>
-                <button id="dDelete" class="danger">Delete</button>
-                <button id="dRefresh" class="ghost">Refresh Prices</button>
+                <button id="dEdit" class="iconActBtn" title="Edit">📝 <span class="btnTxt">Edit</span></button>
+                <button id="dDelete" class="danger iconActBtn" title="Delete">🗑️ <span class="btnTxt">Delete</span></button>
+                <button id="dRefresh" class="ghost iconActBtn" title="Refresh prices">🔄 <span class="btnTxt">Refresh</span></button>
                 <button id="dAnalyze" class="primary">Analyze</button>
             </div>
+        </div>
+    </dialog>
+
+    <!-- Add / edit transaction -->
+    <dialog id="txnDlg">
+        <div class="modal modal-narrow">
+            <header class="dialogHead dialogHead-split">
+                <div>
+                    <strong id="txnDlgTitle">Add Transaction</strong>
+                    <div id="txnDlgSub" class="muted"></div>
+                </div>
+                <button id="txnClose" class="ghost closeBtn" type="button" title="Close" aria-label="Close">x</button>
+            </header>
+            <div class="content">
+                <div class="segmentToggle" id="txnTypeToggle" role="group" aria-label="Transaction type">
+                    <label class="segmentOption"><input type="radio" name="txnType" value="buy" checked /><span>Buy</span></label>
+                    <label class="segmentOption"><input type="radio" name="txnType" value="sell" /><span>Sell</span></label>
+                </div>
+                <div class="rowgrid rowgrid-three">
+                    <div class="row">
+                        <label>Shares</label>
+                        <input id="txnShares" type="number" min="0" step="any" inputmode="decimal" placeholder="10" />
+                    </div>
+                    <div class="row">
+                        <label>Price / share</label>
+                        <input id="txnPrice" type="number" min="0" step="any" inputmode="decimal" placeholder="182.50" />
+                    </div>
+                    <div class="row">
+                        <label>Date</label>
+                        <input id="txnDate" type="date" />
+                    </div>
+                </div>
+                <div class="rowgrid">
+                    <div class="row">
+                        <label>Fee <span class="muted">(optional)</span></label>
+                        <input id="txnFee" type="number" min="0" step="any" inputmode="decimal" value="0" />
+                    </div>
+                    <div class="row">
+                        <label>Note <span class="muted">(optional)</span></label>
+                        <input id="txnNote" type="text" placeholder="e.g. partial trim" />
+                    </div>
+                </div>
+                <div id="txnPreview" class="txnPreview"></div>
+            </div>
+            <div class="actions">
+                <button class="ghost" id="txnCancel">Cancel</button>
+                <button id="txnSave" class="primary">Save</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Create / edit account -->
+    <dialog id="accountDlg">
+        <div class="modal modal-narrow">
+            <header class="dialogHead dialogHead-split">
+                <div>
+                    <strong id="accountDlgTitle">New Account</strong>
+                    <div class="muted">Group holdings into a brokerage account or a watch-only list.</div>
+                </div>
+                <button id="accountClose" class="ghost closeBtn" type="button" title="Close" aria-label="Close">x</button>
+            </header>
+            <div class="content">
+                <div class="row">
+                    <label>Name</label>
+                    <input id="accName" type="text" placeholder="Brokerage, Roth IRA, Watchlist..." />
+                </div>
+                <div class="row">
+                    <label>Type</label>
+                    <div class="segmentToggle" id="accTypeToggle" role="group" aria-label="Account type">
+                        <label class="segmentOption"><input type="radio" name="accType" value="account" checked /><span>Account</span></label>
+                        <label class="segmentOption"><input type="radio" name="accType" value="watchlist" /><span>Watchlist</span></label>
+                    </div>
+                    <div class="muted">Accounts track positions and P&amp;L. Watchlists just follow prices &amp; signals.</div>
+                </div>
+                <div class="row" id="accKeywordRow">
+                    <label>Keyword <span class="muted">(optional lock)</span></label>
+                    <input id="accKeyword" type="text" autocomplete="off" placeholder="Leave blank for no lock" />
+                    <div class="muted" id="accKeywordHint">Set a keyword to make this account read-only until unlocked. It's not a secret — just guards against accidental edits.</div>
+                </div>
+            </div>
+            <div class="actions">
+                <button class="danger ghostDanger" id="accDelete">Delete</button>
+                <button class="ghost" id="accCancel">Cancel</button>
+                <button id="accSave" class="primary">Save</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Adjust cash / deposit to cover a purchase -->
+    <dialog id="cashDlg">
+        <div class="modal modal-narrow">
+            <header class="dialogHead dialogHead-split">
+                <div>
+                    <strong id="cashDlgTitle">Adjust Cash</strong>
+                    <div id="cashDlgSub" class="muted"></div>
+                </div>
+                <button id="cashClose" class="ghost closeBtn" type="button" title="Close" aria-label="Close">x</button>
+            </header>
+            <div class="content">
+                <div id="cashCoverMsg" class="coverMsg" hidden></div>
+                <div class="segmentToggle" id="cashTypeToggle" role="group" aria-label="Cash flow type">
+                    <label class="segmentOption"><input type="radio" name="cashType" value="deposit" checked /><span>Deposit</span></label>
+                    <label class="segmentOption"><input type="radio" name="cashType" value="withdrawal" /><span>Withdraw</span></label>
+                </div>
+                <div class="rowgrid">
+                    <div class="row">
+                        <label>Amount</label>
+                        <input id="cashAmount" type="number" min="0" step="any" inputmode="decimal" placeholder="0.00" />
+                    </div>
+                    <div class="row">
+                        <label>Date</label>
+                        <input id="cashDate" type="date" />
+                    </div>
+                </div>
+                <div class="row">
+                    <label>Note <span class="muted">(optional)</span></label>
+                    <input id="cashNote" type="text" placeholder="e.g. payday transfer" />
+                </div>
+                <div id="cashHint" class="txnPreview"></div>
+            </div>
+            <div class="actions">
+                <button class="ghost" id="cashCancel">Cancel</button>
+                <button id="cashSave" class="primary">Save</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Standalone metric guide (cheat sheet) -->
+    <dialog id="guideDlg">
+        <div class="modal modal-wide guideModal">
+            <header class="dialogHead dialogHead-split">
+                <div>
+                    <strong>Metric Guide</strong>
+                    <div class="muted">A quick reference to the fundamental metrics that matter for tech stocks.</div>
+                </div>
+                <button id="guideClose" class="ghost closeBtn" type="button" title="Close" aria-label="Close">x</button>
+            </header>
+            <div class="guideTickerRow">
+                <input id="mgTickerInput" type="text" placeholder="Ticker e.g. AAPL" maxlength="10" autocomplete="off" spellcheck="false">
+                <button id="mgLoadBtn" class="ghost" type="button">Load real data</button>
+                <span class="muted" id="mgTickerStatus"></span>
+            </div>
+            <div class="content" id="guideContent"></div>
         </div>
     </dialog>
 
@@ -263,8 +305,9 @@
         (function(){
             var hasServer = location.protocol === 'http:' || location.protocol === 'https:';
             var STATIC_BASE = hasServer ? '/static/' : '../static/';
+            var v = (hasServer && window.ASSET_V) ? ('?v=' + window.ASSET_V) : '';
             var s = document.createElement('script');
-            s.src = STATIC_BASE + 'app.js';
+            s.src = STATIC_BASE + 'app.js' + v;
             document.body.appendChild(s);
         })();
     </script>

@@ -51,36 +51,30 @@ const DEFAULT_ANALYST_LABELS = {
 const STRUCTURED_OPTION_KEYS = new Set(['preset', 'date', 'selected_analysts', 'online_tools', 'max_debate_rounds', 'debug']);
 
 const els = {
-    feed: document.getElementById("feed"),
     searchBox: document.getElementById("searchBox"),
-    refreshPricesBtn: document.getElementById("fabRefreshBtn"),
-    runAllBtn: document.getElementById("fabQueueBtn"),
-    heroSection: document.getElementById("heroSection"),
-    heroToggleBtn: document.getElementById("heroToggleBtn"),
-    heroDismissBtn: document.getElementById("heroDismissBtn"),
-    heroAddBtn: document.getElementById("heroAddBtn"),
-    heroRunBtn: document.getElementById("heroRunBtn"),
-    serverNotice: document.getElementById("serverNotice"),
-    overviewCards: document.getElementById("overviewCards"),
-    feedMeta: document.getElementById("feedMeta"),
-    resetOrderBtn: document.getElementById("resetOrderBtn"),
-    fabDock: document.getElementById("fabDock"),
-    fabPanel: document.getElementById("fabPanel"),
-    fabAdd: document.getElementById("fabAdd"),
-    fabNewBtn: document.getElementById("fabNewBtn"),
-    // modal
+    guideBtn: document.getElementById("guideBtn"),
+    menuBtn: document.getElementById("menuBtn"),
+    sideDrawer: document.getElementById("sideDrawer"),
+    drawerOverlay: document.getElementById("drawerOverlay"),
+    drawerClose: document.getElementById("drawerClose"),
+    accountTabs: document.getElementById("accountTabs"),
+    networthPanel: document.getElementById("networthPanel"),
+    sidePanel: document.getElementById("sidePanel"),
+    sideBubbles: document.getElementById("sideBubbles"),
+    holdingsList: document.getElementById("holdingsList"),
+    holdingsTitle: document.getElementById("holdingsTitle"),
+    holdingsMeta: document.getElementById("holdingsMeta"),
+    refreshPricesBtn: document.getElementById("refreshPricesBtn"),
+    serverState: document.getElementById("serverState"),
+    // add / edit holding
     postDlg: document.getElementById("postDlg"),
     dlgTitle: document.getElementById("dlgTitle"),
+    pTicker: document.getElementById("pTicker"),
+    pAccount: document.getElementById("pAccount"),
     pTitle: document.getElementById("pTitle"),
-    pTickers: document.getElementById("pTickers"),
-    pDesc: document.getElementById("pDesc"),
-    pPurchases: document.getElementById("pPurchases"),
-    pDate: document.getElementById("pDate"),
-    pRounds: document.getElementById("pRounds"),
-    pOnlineTools: document.getElementById("pOnlineTools"),
-    pDebug: document.getElementById("pDebug"),
-    pOptions: document.getElementById("pOptions"),
+    pNote: document.getElementById("pNote"),
     cancelDlg: document.getElementById("cancelDlg"),
+    cancelDlgX: document.getElementById("cancelDlgX"),
     saveDlg: document.getElementById("saveDlg"),
     // detail
     detailDlg: document.getElementById("detailDlg"),
@@ -92,7 +86,50 @@ const els = {
     dDelete: document.getElementById("dDelete"),
     dRefresh: document.getElementById("dRefresh"),
     dClose: document.getElementById("dClose"),
-    serverState: document.getElementById("serverState"),
+    // transaction dialog
+    txnDlg: document.getElementById("txnDlg"),
+    txnDlgTitle: document.getElementById("txnDlgTitle"),
+    txnDlgSub: document.getElementById("txnDlgSub"),
+    txnShares: document.getElementById("txnShares"),
+    txnPrice: document.getElementById("txnPrice"),
+    txnDate: document.getElementById("txnDate"),
+    txnFee: document.getElementById("txnFee"),
+    txnNote: document.getElementById("txnNote"),
+    txnPreview: document.getElementById("txnPreview"),
+    txnSave: document.getElementById("txnSave"),
+    txnCancel: document.getElementById("txnCancel"),
+    txnClose: document.getElementById("txnClose"),
+    // account dialog
+    accountDlg: document.getElementById("accountDlg"),
+    accountDlgTitle: document.getElementById("accountDlgTitle"),
+    accName: document.getElementById("accName"),
+    accSave: document.getElementById("accSave"),
+    accCancel: document.getElementById("accCancel"),
+    accClose: document.getElementById("accountClose"),
+    accDelete: document.getElementById("accDelete"),
+    accKeyword: document.getElementById("accKeyword"),
+    accKeywordHint: document.getElementById("accKeywordHint"),
+    // cash dialog
+    cashDlg: document.getElementById("cashDlg"),
+    cashDlgTitle: document.getElementById("cashDlgTitle"),
+    cashDlgSub: document.getElementById("cashDlgSub"),
+    cashCoverMsg: document.getElementById("cashCoverMsg"),
+    cashTypeToggle: document.getElementById("cashTypeToggle"),
+    cashAmount: document.getElementById("cashAmount"),
+    cashDate: document.getElementById("cashDate"),
+    cashNote: document.getElementById("cashNote"),
+    cashHint: document.getElementById("cashHint"),
+    cashSave: document.getElementById("cashSave"),
+    cashCancel: document.getElementById("cashCancel"),
+    cashClose: document.getElementById("cashClose"),
+    // metric guide
+    guideDlg: document.getElementById("guideDlg"),
+    guideContent: document.getElementById("guideContent"),
+    guideClose: document.getElementById("guideClose"),
+    mgTickerInput: document.getElementById("mgTickerInput"),
+    mgLoadBtn: document.getElementById("mgLoadBtn"),
+    mgTickerStatus: document.getElementById("mgTickerStatus"),
+    serverNotice: null,
 };
 
 let APP_CONFIG = {
@@ -112,7 +149,13 @@ let APP_CONFIG = {
     yfinanceAvailable: true,
 };
 
-let POSTS = [];
+let POSTS = [];                 // holdings (one ticker each)
+let ACCOUNTS = [];              // account/watchlist books
+let ACTIVE_ACCOUNT_ID = null;   // currently selected account tab
+let TXN_CTX = { holdingId: null, txId: null }; // transaction dialog state
+let ACCOUNT_EDIT_ID = null;     // account dialog state (null = creating)
+let UNLOCKED_ACCOUNTS = new Set(); // account ids unlocked into edit mode this session
+const ACTIVE_ACCOUNT_KEY = 'stock:activeAccount';
 let HAS_CUSTOM_ORDER = (function(){
     try { return localStorage.getItem('feed:customOrder') === '1'; } catch { return false; }
 })(); // once user reorders, respect the saved order
@@ -143,169 +186,206 @@ const fmtPct = (x) => (x == null || isNaN(x)) ? "" : `${(x).toFixed(2)}%`;
 const toList = (s) => (s || "").split(",").map(t => t.trim()).filter(Boolean);
 const getAnalystCheckboxes = () => Array.from(document.querySelectorAll('.pAnalyst'));
 
-function heroDismissed() {
+// --- money / number formatting helpers
+const fmtShares = (x) => {
+    if (x == null || isNaN(x)) return '';
+    const n = Number(x);
+    return Number.isInteger(n) ? String(n) : n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+};
+const fmtSignedMoney = (x) => {
+    if (x == null || isNaN(x)) return '';
+    const n = Number(x);
+    const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
+    return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+const fmtSignedPct = (x) => {
+    if (x == null || isNaN(x)) return '';
+    const n = Number(x);
+    return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+};
+function fmtCompactMoney(x) {
+    if (x == null || isNaN(x)) return '--';
+    const n = Number(x);
+    const abs = Math.abs(n);
+    const sign = n < 0 ? '-' : '';
+    if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`;
+    if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+    if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`;
+    return `${sign}$${abs.toFixed(2)}`;
+}
+const pnlClass = (x) => (x == null || isNaN(x) || x === 0) ? 'flat' : (x > 0 ? 'pos' : 'neg');
+
+// --- account helpers
+function accountById(id) {
+    return ACCOUNTS.find((a) => a.id === id) || null;
+}
+
+function getActiveAccount() {
+    return accountById(ACTIVE_ACCOUNT_ID) || ACCOUNTS[0] || null;
+}
+
+function setActiveAccount(id) {
+    ACTIVE_ACCOUNT_ID = id;
+    try { localStorage.setItem(ACTIVE_ACCOUNT_KEY, id || ''); } catch {}
+    renderAll();
+}
+
+// --- edit-mode (soft keyword lock) helpers
+// An account with no keyword is always editable. One with a keyword starts
+// locked (read mode) each session and must be unlocked with its keyword.
+function accountHasKeyword(acc) {
+    return !!(acc && typeof acc.keyword === 'string' && acc.keyword.length);
+}
+function accountLocked(acc) {
+    return accountHasKeyword(acc) && !UNLOCKED_ACCOUNTS.has(String(acc.id));
+}
+function canEditAccount(acc) {
+    return !!acc && !accountLocked(acc);
+}
+function canEditHolding(post) {
+    return canEditAccount(accountById(post && post.accountId));
+}
+function lockAccount(acc) {
+    if (!acc) return;
+    UNLOCKED_ACCOUNTS.delete(String(acc.id));
+    renderAll();
+    if (currentDetailId) { const p = getPostById(currentDetailId); if (p) refreshDetailEditMode(p); }
+    showToast('Locked · read mode');
+}
+function unlockAccount(acc) {
+    if (!acc) return;
+    if (!accountHasKeyword(acc)) return;
+    const entry = prompt(`Enter the keyword for "${acc.name}" to enable edit mode:`);
+    if (entry == null) return; // cancelled
+    if (String(entry) === String(acc.keyword)) {
+        UNLOCKED_ACCOUNTS.add(String(acc.id));
+        renderAll();
+        if (currentDetailId) { const p = getPostById(currentDetailId); if (p) refreshDetailEditMode(p); }
+        showToast('Unlocked · edit mode');
+    } else {
+        showToast('Wrong keyword.');
+    }
+}
+function toggleAccountLock(acc) {
+    if (!acc) return;
+    if (accountLocked(acc)) unlockAccount(acc);
+    else lockAccount(acc);
+}
+// Lock toggle button markup for the net-worth/watchlist panel header.
+function lockControlHtml(acc) {
+    if (!accountHasKeyword(acc)) return '';
+    const locked = accountLocked(acc);
+    return `<button class="ghost iconBtn lockBtn ${locked ? 'is-locked' : 'is-unlocked'}" id="lockToggleBtn" type="button" aria-label="${locked ? 'Locked' : 'Editing'}" title="${locked ? 'Locked — click to enter keyword' : 'Editing — click to lock'}">${locked ? '🔒' : '🔓'} <span class="btnTxt">${locked ? 'Locked' : 'Editing'}</span></button>`;
+}
+
+function holdingsForAccount(accountId, query = '') {
+    const q = (query || '').toLowerCase().trim();
+    return POSTS.filter((p) => {
+        if (String(p.accountId) !== String(accountId)) return false;
+        if (!q) return true;
+        const hay = [p.title || '', p.note || p.description || '', ...(p.tickers || [])].join(' ').toLowerCase();
+        return hay.includes(q);
+    });
+}
+
+function holdingTicker(p) {
+    return (p.ticker || (p.tickers || [])[0] || '').toUpperCase();
+}
+
+// Number of un-handled (pending) comment cards on a holding.
+function pendingCommentCount(p) {
+    return ((p && p.comments) || []).filter((c) => (c.status || 'pending') === 'pending').length;
+}
+
+function holdingPosition(p) {
+    // Server stores derived position inside snapshot[ticker]; fall back to client calc.
+    const t = holdingTicker(p);
+    const snap = (p.snapshot || {})[t] || {};
+    if (snap.shares != null || snap.avgCost != null) {
+        return {
+            shares: snap.shares || 0,
+            avgCost: snap.avgCost ?? null,
+            current: snap.current ?? null,
+            marketValue: snap.marketValue ?? (snap.current != null && snap.shares ? snap.current * snap.shares : null),
+            unrealizedPnl: snap.unrealizedPnl ?? null,
+            realizedPnl: snap.realizedPnl ?? 0,
+            pct: snap.pct ?? null,
+        };
+    }
+    return computePosition(p.transactions || [], snap.current ?? null);
+}
+
+async function loadAccounts() {
     try {
-        return localStorage.getItem(HERO_DISMISSED_KEY) === '1';
+        ACCOUNTS = await api('/api/accounts');
     } catch {
-        return document.documentElement.classList.contains('hero-dismissed');
+        ACCOUNTS = [];
     }
+    if (!ACCOUNTS.length) ACCOUNTS = [];
+    // Restore the active account from storage, else first account.
+    let stored = null;
+    try { stored = localStorage.getItem(ACTIVE_ACCOUNT_KEY); } catch {}
+    if (stored && accountById(stored)) ACTIVE_ACCOUNT_ID = stored;
+    else if (!accountById(ACTIVE_ACCOUNT_ID)) ACTIVE_ACCOUNT_ID = ACCOUNTS[0]?.id || null;
+    return ACCOUNTS;
 }
 
-function applyHeroVisibility(dismissed = heroDismissed()) {
-    document.documentElement.classList.toggle('hero-dismissed', dismissed);
-    if (els.heroSection) {
-        if (dismissed) els.heroSection.setAttribute('hidden', 'hidden');
-        else els.heroSection.removeAttribute('hidden');
-        els.heroSection.setAttribute('aria-hidden', dismissed ? 'true' : 'false');
-    }
-    if (els.heroToggleBtn) {
-        els.heroToggleBtn.setAttribute('aria-expanded', dismissed ? 'false' : 'true');
-    }
+// Orchestrates the whole portfolio surface (tabs + net-worth + side panel).
+function renderAll() {
+    renderAccountTabs();
+    renderNetworthPanel();
+    renderSideBubbles();
+    renderHoldingsList();
 }
 
-function setHeroDismissed(dismissed) {
-    try {
-        if (dismissed) localStorage.setItem(HERO_DISMISSED_KEY, '1');
-        else localStorage.removeItem(HERO_DISMISSED_KEY);
-    } catch {}
-    applyHeroVisibility(dismissed);
-}
-
-function syncWatchlistPanelActions() {
-    if (els.resetOrderBtn) {
-        els.resetOrderBtn.disabled = !HAS_CUSTOM_ORDER;
-        els.resetOrderBtn.title = HAS_CUSTOM_ORDER ? 'Switch back to timestamp sorting' : 'Already using timestamp sorting';
-    }
-}
-
-function setFabMenuOpen(open) {
-    FAB_STATE.open = !!open;
-    if (els.fabDock) els.fabDock.classList.toggle('is-open', FAB_STATE.open);
-    if (els.fabPanel) els.fabPanel.setAttribute('aria-hidden', FAB_STATE.open ? 'false' : 'true');
-    if (els.fabAdd) els.fabAdd.setAttribute('aria-expanded', FAB_STATE.open ? 'true' : 'false');
-    [els.refreshPricesBtn, els.runAllBtn, els.fabNewBtn].filter(Boolean).forEach((button) => {
-        button.tabIndex = FAB_STATE.open ? 0 : -1;
+// Cash-flow ledger: derive current cash + contributions (net deposits, incl.
+// implied deposits that backfill buys with no recorded deposit) from an account's
+// cashFlows plus all its holdings' buy/sell transactions, processed in date order.
+function accountLedger(account, holdings) {
+    const events = [];
+    (account?.cashFlows || []).forEach((cf) => {
+        const amt = Number(cf?.amount) || 0;
+        if (amt <= 0) return;
+        events.push({ date: String(cf.date || ''), kind: cf.type === 'withdrawal' ? 'withdraw' : 'deposit', amount: amt });
     });
-    if (!FAB_STATE.open && document.activeElement?.closest?.('#fabPanel')) {
-        els.fabAdd?.focus();
-    }
-}
-
-function clearFabPressTimer() {
-    if (FAB_STATE.pressTimer) {
-        clearTimeout(FAB_STATE.pressTimer);
-        FAB_STATE.pressTimer = null;
-    }
-}
-
-function closeFabMenu() {
-    clearFabPressTimer();
-    FAB_STATE.pointerActive = false;
-    FAB_STATE.pressOpened = false;
-    setFabMenuOpen(false);
-}
-
-function consumeSuppressedFabClick(event) {
-    if (!FAB_STATE.suppressClick) return false;
-    FAB_STATE.suppressClick = false;
-    event.preventDefault();
-    event.stopPropagation();
-    return true;
-}
-
-function runFabAction(action) {
-    if (action === 'refresh') refreshAllSnapshots();
-    else if (action === 'queue') queueAllWatchlists();
-    else if (action === 'new') openNew();
-    closeFabMenu();
-}
-
-function fabActionFromPoint(clientX, clientY) {
-    const target = document.elementFromPoint(clientX, clientY);
-    const actionButton = target?.closest?.('[data-fab-action]');
-    if (actionButton?.dataset?.fabAction) return actionButton.dataset.fabAction;
-    return null;
-}
-
-function handleFabPressStart(event) {
-    if (event.pointerType === 'mouse') return;
-    // Capture the pointer so the browser doesn't fire pointercancel when the
-    // finger drifts off the button during the hold-to-expand gesture.
-    if (event.pointerId != null && event.target?.setPointerCapture) {
-        try { event.target.setPointerCapture(event.pointerId); } catch {}
-    }
-    FAB_STATE.pointerActive = true;
-    FAB_STATE.pressOpened = false;
-    clearFabPressTimer();
-    FAB_STATE.pressTimer = setTimeout(() => {
-        FAB_STATE.pressOpened = true;
-        setFabMenuOpen(true);
-    }, 220);
-}
-
-function handleFabPressEnd(event) {
-    if (!FAB_STATE.pointerActive) return;
-    // Release pointer capture before elementFromPoint so the hit-test isn't
-    // redirected back to the captured element (the FAB button itself).
-    if (event.pointerId != null && event.target?.releasePointerCapture) {
-        try { event.target.releasePointerCapture(event.pointerId); } catch {}
-    }
-    const action = FAB_STATE.pressOpened ? fabActionFromPoint(event.clientX, event.clientY) : null;
-    clearFabPressTimer();
-    FAB_STATE.pointerActive = false;
-    FAB_STATE.pressOpened = false;
-    FAB_STATE.suppressClick = true;
-    if (action) runFabAction(action);
-    else closeFabMenu();
-}
-
-function handleFabPressCancel() {
-    if (!FAB_STATE.pointerActive) return;
-    FAB_STATE.pointerActive = false;
-    FAB_STATE.pressOpened = false;
-    FAB_STATE.suppressClick = true;
-    closeFabMenu();
-}
-
-function bindFabDock() {
-    if (!els.fabDock || !els.fabAdd) return;
-    const finePointer = () => window.matchMedia('(hover: hover) and (pointer: fine)').matches;
-
-    setFabMenuOpen(false);
-
-    els.fabAdd.addEventListener('mouseenter', () => {
-        if (finePointer()) setFabMenuOpen(true);
-    });
-    els.fabDock.addEventListener('mouseleave', () => {
-        if (finePointer()) closeFabMenu();
-    });
-
-    window.addEventListener('pointerdown', (event) => {
-        if (!FAB_STATE.open || els.fabDock.contains(event.target)) return;
-        closeFabMenu();
-    });
-
-    // Prevent OS long-press context menu on the FAB button (mobile).
-    els.fabAdd.addEventListener('contextmenu', (e) => e.preventDefault());
-
-    els.fabAdd.addEventListener('pointerdown', handleFabPressStart);
-    window.addEventListener('pointerup', handleFabPressEnd);
-    window.addEventListener('pointercancel', handleFabPressCancel);
-
-    els.fabAdd.addEventListener('click', (event) => {
-        if (consumeSuppressedFabClick(event)) return;
-        event.preventDefault();
-        setFabMenuOpen(!FAB_STATE.open);
-    });
-
-    [els.runAllBtn, els.refreshPricesBtn, els.fabNewBtn].filter(Boolean).forEach((button) => {
-        button.addEventListener('click', (event) => {
-            if (consumeSuppressedFabClick(event)) return;
-            const action = button.dataset.fabAction;
-            if (!action) return;
-            runFabAction(action);
+    holdings.forEach((p) => {
+        (p.transactions || []).forEach((t) => {
+            if (!t || (t.type !== 'buy' && t.type !== 'sell') || !(Number(t.shares) > 0)) return;
+            const gross = Number(t.shares) * Number(t.price), fee = Number(t.fee) || 0;
+            events.push({ date: String(t.date || ''), kind: t.type, amount: t.type === 'buy' ? gross + fee : gross - fee });
         });
     });
+    events.sort((a, b) => a.date.localeCompare(b.date));
+    let cash = 0, contributions = 0, implied = 0;
+    for (const e of events) {
+        if (e.kind === 'deposit') { cash += e.amount; contributions += e.amount; }
+        else if (e.kind === 'withdraw') { cash -= e.amount; contributions -= e.amount; }
+        else if (e.kind === 'buy') {
+            if (cash < e.amount - 1e-9) { const short = e.amount - cash; cash += short; contributions += short; implied += short; }
+            cash -= e.amount;
+        } else if (e.kind === 'sell') { cash += e.amount; }
+    }
+    const r2 = (x) => Math.round(x * 100) / 100;
+    return { cash: r2(cash), contributions: r2(contributions), implied: r2(implied) };
+}
+
+function accountNetWorth(account, holdings) {
+    const totals = computeAccountTotals(holdings);
+    const ledger = accountLedger(account, holdings);
+    const invested = totals.marketValue || 0;
+    const netWorth = ledger.cash + invested;
+    const returnAbs = netWorth - ledger.contributions;
+    const returnPct = ledger.contributions > 0 ? (returnAbs / ledger.contributions) * 100 : null;
+    return {
+        cash: ledger.cash,
+        contributions: ledger.contributions,
+        invested,
+        netWorth,
+        returnAbs,
+        returnPct,
+        totals,
+    };
 }
 
 function normalizeTickers(value) {
@@ -408,35 +488,97 @@ function setPresetOnForm(presetKey, applyDefaults = true) {
     const preset = APP_CONFIG.analysisPresets[key] || DEFAULT_PRESETS[key] || DEFAULT_PRESETS.balanced;
     if (applyDefaults) {
         setSelectedAnalysts(preset.selected_analysts || DEFAULT_PRESETS.balanced.selected_analysts);
-        els.pOnlineTools.checked = preset.online_tools !== false;
-        els.pRounds.value = String(preset.max_debate_rounds || 1);
+        const ot = document.getElementById('pOnlineTools'); if (ot) ot.checked = preset.online_tools !== false;
+        const rd = document.getElementById('pRounds'); if (rd) rd.value = String(preset.max_debate_rounds || 1);
     }
 }
 
+// The TradingAgents config fields live in a holding's Report tab (rendered on demand), so
+// resolve them live each call and no-op when the tab isn't mounted.
 function setFormFromOptions(options = {}) {
+    if (!document.getElementById('pDate')) return;
     const normalized = normalizedOptions(options);
     setPresetOnForm(normalized.preset, true);
-    els.pDate.value = normalized.date || todayLocalDate();
-    els.pRounds.value = String(normalized.max_debate_rounds || 1);
-    els.pOnlineTools.checked = normalized.online_tools !== false;
-    els.pDebug.checked = Boolean(normalized.debug);
+    const pd = document.getElementById('pDate'); if (pd) pd.value = normalized.date || todayLocalDate();
+    const rd = document.getElementById('pRounds'); if (rd) rd.value = String(normalized.max_debate_rounds || 1);
+    const ot = document.getElementById('pOnlineTools'); if (ot) ot.checked = normalized.online_tools !== false;
+    const dbg = document.getElementById('pDebug'); if (dbg) dbg.checked = Boolean(normalized.debug);
     setSelectedAnalysts(normalized.selected_analysts);
     const advanced = stripStructuredOptions(options);
-    els.pOptions.value = Object.keys(advanced).length ? JSON.stringify(advanced, null, 2) : '';
+    const po = document.getElementById('pOptions'); if (po) po.value = Object.keys(advanced).length ? JSON.stringify(advanced, null, 2) : '';
 }
 
 function buildOptionsFromForm() {
-    const advanced = optionsFromJson(els.pOptions.value);
+    const po = document.getElementById('pOptions');
+    const pd = document.getElementById('pDate');
+    const rd = document.getElementById('pRounds');
+    const ot = document.getElementById('pOnlineTools');
+    const dbg = document.getElementById('pDebug');
+    const advanced = optionsFromJson(po ? po.value : '');
     return {
         ...advanced,
         preset: getSelectedPreset(),
-        date: els.pDate.value || todayLocalDate(),
+        date: (pd && pd.value) || todayLocalDate(),
         selected_analysts: selectedAnalystsFromForm(),
-        online_tools: !!els.pOnlineTools.checked,
-        max_debate_rounds: clamp(parseInt(els.pRounds.value, 10) || 1, 1, 4),
-        debug: !!els.pDebug.checked,
+        online_tools: !!(ot && ot.checked),
+        max_debate_rounds: clamp(parseInt(rd ? rd.value : '1', 10) || 1, 1, 4),
+        debug: !!(dbg && dbg.checked),
     };
 }
+
+// HTML for the TradingAgents setup block, generated from APP_CONFIG so presets/analysts stay
+// in sync. Rendered into a holding's Report tab.
+function analysisConfigMarkup() {
+    const presets = APP_CONFIG.analysisPresets || DEFAULT_PRESETS;
+    const presetCards = Object.entries(presets).map(([key, p]) => `
+        <label class="presetCard">
+            <input type="radio" name="analysisPreset" value="${escapeHtml(key)}"${key === (APP_CONFIG.defaultPreset || 'balanced') ? ' checked' : ''} />
+            <span class="presetName">${escapeHtml(p.label || key)}</span>
+            <span class="presetDesc">${escapeHtml(p.description || '')}</span>
+        </label>`).join('');
+    const labels = APP_CONFIG.analystLabels || DEFAULT_ANALYST_LABELS;
+    const analystTiles = Object.entries(labels).map(([key, label]) =>
+        `<label class="checkTile"><input class="pAnalyst" type="checkbox" value="${escapeHtml(key)}" checked />${escapeHtml(label)}</label>`).join('');
+    return `
+        <section class="formSection analysisConfigSection">
+            <div class="formSectionHead">TradingAgents setup</div>
+            <div class="presetGrid">${presetCards}</div>
+            <div class="rowgrid rowgrid-three">
+                <div class="row">
+                    <label>Analysis date</label>
+                    <input id="pDate" type="date" />
+                </div>
+                <div class="row">
+                    <label>Debate rounds</label>
+                    <input id="pRounds" type="number" min="1" max="4" step="1" value="1" />
+                </div>
+                <div class="toggleStack">
+                    <label class="toggleTile">
+                        <input id="pOnlineTools" type="checkbox" checked />
+                        <span><strong>Use online tools</strong><small>Prefer live data sources when available.</small></span>
+                    </label>
+                    <label class="toggleTile">
+                        <input id="pDebug" type="checkbox" />
+                        <span><strong>Verbose logs</strong><small>Keep more reasoning detail in the report.</small></span>
+                    </label>
+                </div>
+            </div>
+            <div class="row">
+                <label>Analyst coverage</label>
+                <div class="analystGrid">${analystTiles}</div>
+            </div>
+            <details class="advancedBlock">
+                <summary>Advanced overrides</summary>
+                <div class="muted">Optional JSON merged into the request. Structured fields above win if the same key appears twice.</div>
+                <textarea id="pOptions" placeholder='{"config":{"quick_think_llm":"gpt-4.1-mini"}}'></textarea>
+            </details>
+            <div class="inline analysisConfigActions">
+                <span class="muted" id="analysisCfgHint">Saved settings are used when you press Analyze.</span>
+                <button id="saveAnalysisCfg" class="ghost" type="button">Save settings</button>
+            </div>
+        </section>`;
+}
+
 
 function defaultTitleForTickers(tickers) {
     if (!tickers.length) return 'Untitled';
@@ -589,45 +731,29 @@ async function loadQueueStatus() {
 
 async function loadPosts() {
     POSTS = await api("/api/stocks");
-    // Detect if server order differs from time-sorted order; if so, treat as custom order
-    try {
-        const byTime = POSTS.slice().sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""));
-        const same = (POSTS.length === byTime.length) && POSTS.every((p, i) => p.id === byTime[i].id);
-        if (!same) HAS_CUSTOM_ORDER = true;
-    } catch {}
-    // if server returned posts in a specific order, respect it; HAS_CUSTOM_ORDER persists during session
     await loadQueueStatus();
-    renderFeed();
+    renderAll();
 }
 
 async function savePost() {
-    const tickers = normalizeTickers(els.pTickers.value);
-    if (!tickers.length) {
-        showToast('Add at least one ticker before saving.');
-        els.pTickers.focus();
+    const ticker = (els.pTicker.value || '').trim().toUpperCase();
+    if (!ticker) {
+        showToast('Enter a ticker symbol.');
+        els.pTicker.focus();
         return;
     }
-    const selectedAnalysts = selectedAnalystsFromForm();
-    if (!selectedAnalysts.length) {
-        showToast('Select at least one analyst for the run.');
-        return;
-    }
-
-    let options;
-    try {
-        options = buildOptionsFromForm();
-    } catch (error) {
-        showToast(error.message || 'Could not parse advanced overrides.');
-        els.pOptions.focus();
-        return;
-    }
+    // TradingAgents config is edited in the holding's Report tab, not here. New holdings get
+    // the default options; edits preserve whatever was previously configured.
+    const options = editingId
+        ? ((getPostById(editingId) || {}).options || normalizedOptions(APP_CONFIG.defaultOptions || {}))
+        : normalizedOptions(APP_CONFIG.defaultOptions || {});
 
     const body = {
-        title: els.pTitle.value.trim() || defaultTitleForTickers(tickers),
-        tickers,
-        description: els.pDesc.value.trim(),
-        purchases: parsePurchases(els.pPurchases.value),
-        options: { ...options, selected_analysts: selectedAnalysts },
+        ticker,
+        accountId: els.pAccount.value || (getActiveAccount() || {}).id,
+        title: els.pTitle.value.trim() || ticker,
+        note: els.pNote.value.trim(),
+        options,
     };
     const wasEditingId = editingId;
     let saved;
@@ -639,26 +765,33 @@ async function savePost() {
             saved = await api(`/api/stocks/${encodeURIComponent(editingId)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         }
     } catch (error) {
-        showToast(`Failed to save watchlist: ${error.message || error}`);
+        showToast(`Failed to save holding: ${error.message || error}`);
         els.saveDlg.disabled = false;
         return;
     }
     els.saveDlg.disabled = false;
     els.postDlg.close();
     editingId = null;
+    if (saved.accountId) setActiveAccountSilently(saved.accountId);
     upsertPost(saved);
+    invalidateNetworth();
     await loadPosts();
-    // If the detail dialog is open for this post, re-open it to reflect new tickers immediately
+    // If the detail dialog is open for this holding, re-open it to reflect changes immediately
     if (currentDetailId && wasEditingId && currentDetailId === wasEditingId) {
         openDetail(wasEditingId);
     }
+}
+
+function setActiveAccountSilently(id) {
+    ACTIVE_ACCOUNT_ID = id;
+    try { localStorage.setItem(ACTIVE_ACCOUNT_KEY, id || ''); } catch {}
 }
 
 async function runAnalysis(id) {
     const res = await api(`/api/analyze/${encodeURIComponent(id)}`, { method: "POST" });
     const idx = POSTS.findIndex(p => p.id === id);
     if (idx >= 0) POSTS[idx] = res;
-    renderFeed();
+    renderAll();
     openDetail(id);
 }
 
@@ -719,7 +852,7 @@ function runAnalysisStream(id) {
                     // Update snapshot section live
                     if (snapshotHost()) { snapshotHost().innerHTML = renderSnapshotTable(p); }
                     // Update feed row highlighting and values
-                    renderFeed();
+                    renderAll();
                 }
             } else if (data.type === 'ticker-error') {
                 appendLog(`Error for ${data.ticker}: ${data.error}`);
@@ -753,245 +886,872 @@ function stopAnalysisStream(id) {
 }
 
 // --- UI
-function renderOverview() {
-    if (!els.overviewCards) return;
-    const totalPosts = POSTS.length;
-    const totalTickers = POSTS.reduce((sum, post) => sum + (post.tickers || []).length, 0);
-    const runningCount = JOB_STATUS.running ? 1 : 0;
-    const queuedCount = (JOB_STATUS.queue || []).length;
-    const primaryCounts = { Buy: 0, Hold: 0, Sell: 0 };
-    POSTS.forEach((post) => {
-        const suggestion = getPrimarySuggestion(post);
-        if (primaryCounts[suggestion] == null) primaryCounts.Hold += 1;
-        else primaryCounts[suggestion] += 1;
+function renderAccountTabs() {
+    const host = els.accountTabs;
+    if (!host) return;
+    host.innerHTML = '';
+    const active = getActiveAccount();
+    ACCOUNTS.forEach((acc) => {
+        const holdings = POSTS.filter((p) => String(p.accountId) === String(acc.id));
+        const totals = computeAccountTotals(holdings);
+        const isActive = active && acc.id === active.id;
+        const isWatch = acc.type === 'watchlist';
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'accountTab' + (isActive ? ' is-active' : '');
+        tab.setAttribute('data-id', acc.id);
+        const badge = isWatch
+            ? `<span class="accountTabSub muted">${holdings.length} watched</span>`
+            : `<span class="accountTabSub ${pnlClass(totals.totalPnl)}">${totals.marketValue ? fmtCompactMoney(totals.marketValue) : '—'}</span>`;
+        tab.innerHTML = `<span class="accountTabName">${escapeHtml(acc.name || 'Account')}</span>${badge}`;
+        tab.addEventListener('click', () => {
+            if (isActive) openAccountDlg(acc);
+            else setActiveAccount(acc.id);
+        });
+        host.appendChild(tab);
     });
-    const freshToday = POSTS.filter((post) => {
-        if (!post.analysis?.completedAt) return false;
-        try { return new Date(post.analysis.completedAt).toDateString() === new Date().toDateString(); } catch { return false; }
-    }).length;
-    const readyCount = POSTS.filter((post) => (post.tickers || []).length && !['queued', 'running'].includes(getStatusState(post))).length;
-    const cards = [
-        {
-            label: 'Watchlists',
-            value: String(totalPosts),
-            meta: `${totalTickers} tracked tickers`,
-            sub: totalPosts ? `${Math.round(totalTickers / totalPosts)} avg tickers per list` : 'Create your first basket to begin.',
-        },
-        {
-            label: 'Queue',
-            value: `${runningCount + queuedCount}`,
-            meta: runningCount ? `${runningCount} running now` : 'Nothing currently running',
-            sub: queuedCount ? `${queuedCount} waiting in line` : `${readyCount} ready to queue`,
-        },
-        {
-            label: 'Primary Calls',
-            value: `${primaryCounts.Buy}/${primaryCounts.Hold}/${primaryCounts.Sell}`,
-            meta: 'Buy / Hold / Sell',
-            sub: totalPosts ? `${primaryCounts.Buy} bullish lists and ${primaryCounts.Sell} risk-off lists` : 'Run analysis to populate signals.',
-        },
-        {
-            label: 'Fresh Today',
-            value: String(freshToday),
-            meta: freshToday ? `${freshToday} lists completed today` : 'No completed runs yet today',
-            sub: APP_CONFIG.autoRegenerationEnabled ? 'Auto regeneration is enabled on the server.' : 'Runs update only when you queue them.',
-        },
-    ];
-
-    els.overviewCards.innerHTML = cards.map((card) => `
-        <article class="overviewCard">
-            <span class="overviewLabel">${escapeHtml(card.label)}</span>
-            <span class="overviewValue">${escapeHtml(card.value)}</span>
-            <div class="overviewMeta">${escapeHtml(card.meta)}</div>
-            <div class="overviewSub">${escapeHtml(card.sub)}</div>
-        </article>
-    `).join('');
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'accountTab accountTabAdd';
+    add.setAttribute('aria-label', 'Add account');
+    add.textContent = '+ Account';
+    add.addEventListener('click', () => openAccountDlg(null));
+    host.appendChild(add);
 }
 
-function renderFeed() {
-    const q = (els.searchBox.value || '').toLowerCase().trim();
-    let filtered = POSTS.filter((post) => {
-        if (!q) return true;
-        const hay = [post.title || '', post.description || '', ...(post.tickers || [])].join(' ').toLowerCase();
-        return hay.includes(q);
-    });
-    if (!HAS_CUSTOM_ORDER) {
-        filtered = filtered.slice().sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''));
-    }
-
-    renderOverview();
-    if (els.feedMeta) {
-        const totalTickers = filtered.reduce((sum, post) => sum + (post.tickers || []).length, 0);
-        els.feedMeta.textContent = `${filtered.length} watchlists visible / ${POSTS.length} total · ${totalTickers} tickers in view`;
-    }
-    syncWatchlistPanelActions();
-
-    if (!filtered.length) {
-        els.feed.innerHTML = `<div class="empty-state">
-          <div class="muted">No watchlists match the current view yet. Create a basket, choose a preset, and queue the run when you are ready.</div>
+// Left pane: the "major" net-worth view (one large graph), like a stock page.
+function renderNetworthPanel() {
+    const host = els.networthPanel;
+    if (!host) return;
+    const acc = getActiveAccount();
+    if (!acc) {
+        host.innerHTML = `<div class="panelCard emptyPanel">
+            <div class="muted">No accounts yet.</div>
+            <button class="primary" id="firstAccountBtn" type="button">+ New Account</button>
         </div>`;
+        document.getElementById('firstAccountBtn')?.addEventListener('click', () => openAccountDlg(null));
+        return;
+    }
+    const holdings = POSTS.filter((p) => String(p.accountId) === String(acc.id));
+    const isWatch = acc.type === 'watchlist';
+
+    if (isWatch) {
+        const counts = { Buy: 0, Hold: 0, Sell: 0 };
+        holdings.forEach((p) => { const s = getPrimarySuggestion(p); if (counts[s] == null) counts.Hold += 1; else counts[s] += 1; });
+        host.innerHTML = `
+          <div class="nwHead">
+            <div>
+              <div class="portfolioEyebrow">${escapeHtml(acc.name)} · Watchlist</div>
+              <div class="nwValue">${holdings.length}</div>
+              <div class="nwSub muted">tickers tracked</div>
+            </div>
+            <div class="nwHeadActions">
+              ${lockControlHtml(acc)}
+              ${canEditAccount(acc) ? '<button class="ghost iconBtn" id="editAccountBtn" type="button" aria-label="Edit account">📝 <span class="btnTxt">Edit</span></button>' : ''}
+            </div>
+          </div>
+          <div class="watchBig">
+            <div class="watchBigTile pos"><span>${counts.Buy}</span><small>Buy</small></div>
+            <div class="watchBigTile"><span>${counts.Hold}</span><small>Hold</small></div>
+            <div class="watchBigTile neg"><span>${counts.Sell}</span><small>Sell</small></div>
+          </div>
+          <div class="nwChartNote muted">Watchlists track TradingAgents signals, not positions. Switch the type in Edit to track net worth &amp; P&amp;L.</div>
+        `;
+        document.getElementById('editAccountBtn')?.addEventListener('click', () => openAccountDlg(acc));
+        document.getElementById('lockToggleBtn')?.addEventListener('click', () => toggleAccountLock(acc));
         return;
     }
 
-    const table = document.createElement('table');
-    table.className = 'table';
-    table.innerHTML = `
-    <thead>
-      <tr>
-        <th style="width:24px"></th>
-        <th style="width:32%">Watchlist</th>
-        <th style="width:22%">Tickers</th>
-        <th style="width:14%;text-align:right">Purchase</th>
-        <th style="width:14%;text-align:right">Current</th>
-        <th style="width:10%;text-align:right">Move</th>
-        <th style="width:8%">Signal</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  `;
-    const tbody = table.querySelector('tbody');
-
-    for (const post of filtered) {
-        const primary = getPrimaryTicker(post);
-        const snap = (post.snapshot || {})[primary] || {};
-        const purchase = (post.purchases || {})[primary];
-        const suggestion = getPrimarySuggestion(post);
-        const preset = getPresetInfo(post.options || {});
-        const options = normalizedOptions(post.options || {});
-        const progress = post.analysis?.progress || {};
-        const runningNote = ['queued', 'running'].includes(getStatusState(post))
-            ? `<span class="miniTag">${escapeHtml(`${progress.completed || 0}/${progress.total || (post.tickers || []).length || 0} tickers`)}</span>`
-            : `<span class="miniTag">${escapeHtml(post.analysis?.completedAt ? `last run ${formatRelativeTime(post.analysis.completedAt)}` : 'awaiting first run')}</span>`;
-        const tr = document.createElement('tr');
-        tr.className = `rowAccent ${classBySuggestion(suggestion)}`;
-        tr.setAttribute('data-id', post.id);
-        const tagRail = `
-            ${getStatusBadgeHtml(post)}
-            <span class="miniTag">${escapeHtml(preset.label || 'Preset')}</span>
-            <span class="miniTag">${escapeHtml(`${options.selected_analysts.length} analysts`)}</span>
-            ${options.online_tools ? '<span class="miniTag">live tools</span>' : '<span class="miniTag">offline only</span>'}
-            ${runningNote}
-        `;
-        tr.innerHTML = `
-      <td class="drag-cell"><span class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder" draggable="false">::</span></td>
-      <td class="watchlistRowCell" colspan="6">
-        <table class="watchlistRowTable" role="presentation">
-            <tbody>
-                <tr class="watchlistRowMain">
-                    <td class="watchlistCol watchlistCol-name" data-label="Watchlist">
-                        <div class="watchlistTitle">${escapeHtml(post.title || 'Untitled')}</div>
-                        <div class="watchlistDesc muted">${post.description ? escapeHtml(post.description.slice(0, 140)) : 'No thesis added yet.'}</div>
-                    </td>
-                    <td class="watchlistCol watchlistCol-tickers" data-label="Tickers">
-                        <div class="tickerRail">${(post.tickers || []).map((ticker) => `<span class="tickerpill">${escapeHtml(ticker)}</span>`).join('')}</div>
-                    </td>
-                    <td class="watchlistCol watchlistCol-number" data-label="Purchase">${fmtMoney(purchase)}</td>
-                    <td class="watchlistCol watchlistCol-number" data-label="Current">${fmtMoney(snap.current)}</td>
-                    <td class="watchlistCol watchlistCol-number" data-label="Move">${snap.pct == null ? '' : fmtPct(snap.pct)}</td>
-                    <td class="watchlistCol watchlistCol-signal" data-label="Signal"><span class="badge suggestion ${classBySuggestion(suggestion)}">${escapeHtml(suggestion || '')}</span></td>
-                </tr>
-                <tr class="watchlistRowMeta">
-                    <td colspan="6">
-                        <div class="watchlistTagRail">${tagRail}</div>
-                    </td>
-                </tr>
-            </tbody>
-        </table>
-      </td>
+    const nw = accountNetWorth(acc, holdings);
+    const headline = NW_MODE === 'return'
+        ? `<div class="nwValue ${pnlClass(nw.returnAbs)}">${fmtSignedMoney(nw.returnAbs)}</div>
+           <div class="nwSub"><span class="${pnlClass(nw.returnAbs)}">${nw.returnPct != null ? fmtSignedPct(nw.returnPct) : '—'}</span><span class="muted">total return on ${fmtCompactMoney(nw.contributions)} invested</span></div>`
+        : `<div class="nwValue">${fmtCompactMoney(nw.netWorth)}</div>
+           <div class="nwSub"><span class="${pnlClass(nw.returnAbs)}">${fmtSignedMoney(nw.returnAbs)}${nw.returnPct != null ? ` (${fmtSignedPct(nw.returnPct)})` : ''}</span><span class="muted">total return</span></div>`;
+    const ranges = [['1d', '1D'], ['5d', '1W'], ['1mo', '1M'], ['3mo', '3M'], ['6mo', '6M'], ['1y', '1Y'], ['2y', '2Y'], ['all', 'ALL']];
+    // Disable a fixed range when more than ~90% of it would be empty "no data" filler, i.e.
+    // when the account has less than 10% of that range in actual history. 'all' is always
+    // available once there's any activity. With no activity at all, leave every range usable.
+    const firstAct = accountFirstActivityDate(acc, holdings);
+    const spanDays = firstAct ? daysSinceDate(firstAct) + 1 : 0;
+    const rangeEnabled = (key) => {
+        if (!firstAct) return true;
+        if (key === 'all') return true;
+        return spanDays >= (NW_RANGE_DAYS[key] || 30) * 0.1;
+    };
+    if (!rangeEnabled(NW_PERIOD)) {
+        // Saved range no longer has enough history: fall back to the widest enabled fixed range.
+        NW_PERIOD = ['2y', '1y', '6mo', '3mo', '1mo', '5d', '1d'].find(rangeEnabled) || 'all';
+    }
+    host.innerHTML = `
+      <div class="nwHead">
+        <div>
+          <div class="portfolioEyebrow">${escapeHtml(acc.name)} · ${NW_MODE === 'return' ? 'Return' : 'Net worth'}</div>
+          ${headline}
+        </div>
+        <div class="nwHeadActions">
+          ${lockControlHtml(acc)}
+          ${canEditAccount(acc) ? '<button class="ghost iconBtn" id="editAccountBtn" type="button" aria-label="Edit account">📝 <span class="btnTxt">Edit</span></button>' : ''}
+        </div>
+      </div>
+      <div class="nwBreak">
+        <span class="nwChip"><span class="nwChipLabel">Invested</span> ${fmtCompactMoney(nw.invested)}</span>
+        ${canEditAccount(acc)
+          ? `<button class="nwChip nwChipBtn" id="adjustCashBtn" type="button"><span class="nwChipLabel">Cash</span> ${fmtCompactMoney(nw.cash)} <span class="nwChipEdit">+ adjust</span></button>`
+          : `<span class="nwChip"><span class="nwChipLabel">Cash</span> ${fmtCompactMoney(nw.cash)}</span>`}
+      </div>
+      <div class="nwControls">
+        <div class="nwRanges" id="nwRanges">
+          ${ranges.map(([r, lbl]) => { const en = rangeEnabled(r); return `<button type="button" class="nwRange${r === NW_PERIOD ? ' is-active' : ''}" data-r="${r}"${en ? '' : ' disabled title="Not enough history for this range"'}>${lbl}</button>`; }).join('')}
+        </div>
+        <div class="segmentToggle nwModeToggle" id="nwModeToggle" role="group" aria-label="Chart mode">
+          <label class="segmentOption"><input type="radio" name="nwMode" value="value" ${NW_MODE !== 'return' ? 'checked' : ''} /><span>Value</span></label>
+          <label class="segmentOption"><input type="radio" name="nwMode" value="return" ${NW_MODE === 'return' ? 'checked' : ''} /><span>Return</span></label>
+        </div>
+      </div>
+      <div class="nwChartWrap"><canvas id="networthCanvas"></canvas></div>
+      <div class="nwChartNote muted">${NW_MODE === 'return'
+        ? 'Return = net worth − net deposits, so adding cash never shows as a gain.'
+        : 'Net worth = positions at daily close + cash. Dashed line = net deposits (your contributions).'}</div>
     `;
-        // Avoid triggering click while dragging
-        let dragStarted = false;
-        const handle = tr.querySelector('.drag-handle');
-        if (handle) {
-            handle.setAttribute('draggable', 'true');
-            handle.addEventListener('dragstart', (e) => {
-                dragStarted = true;
-                tr.classList.add('dragging');
-                // data
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', post.id);
-                // custom drag image (ghost)
-                try {
-                    const ghost = document.createElement('div');
-                    ghost.className = 'drag-ghost';
-                    ghost.textContent = post.title || 'Untitled';
-                    document.body.appendChild(ghost);
-                    e.dataTransfer.setDragImage(ghost, 10, 10);
-                    window._dragGhost = ghost;
-                } catch {}
-            });
-            handle.addEventListener('dragend', () => {
-                dragStarted = false;
-                tr.classList.remove('dragging');
-                tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drop-before','drop-after'));
-                if (window._dragGhost) { try { window._dragGhost.remove(); } catch {} window._dragGhost = null; }
-            });
+    document.getElementById('editAccountBtn')?.addEventListener('click', () => openAccountDlg(acc));
+    document.getElementById('lockToggleBtn')?.addEventListener('click', () => toggleAccountLock(acc));
+    document.getElementById('adjustCashBtn')?.addEventListener('click', () => openCashDlg(acc));
+    document.getElementById('nwRanges')?.addEventListener('click', (e) => {
+        const b = e.target.closest('.nwRange'); if (!b || b.disabled) return;
+        NW_PERIOD = b.dataset.r;
+        try { localStorage.setItem('stock:nwPeriod', NW_PERIOD); } catch {}
+        renderNetworthPanel();
+    });
+    document.getElementById('nwModeToggle')?.addEventListener('change', (e) => {
+        NW_MODE = e.target.value === 'return' ? 'return' : 'value';
+        try { localStorage.setItem('stock:nwMode', NW_MODE); } catch {}
+        renderNetworthPanel();
+    });
+    wireNwChartHover(host);
+    loadNetworthChart(acc, holdings, NW_PERIOD);
+}
+
+// Crosshair interactions on the net worth chart: hovering (mouse) or holding a finger
+// (touch) tracks a vertical/horizontal guide and swaps the headline `.nwValue`/`.nwSub`
+// to the value at that point in time; releasing restores the live headline.
+function wireNwChartHover(host) {
+    const canvas = host.querySelector('#networthCanvas');
+    const valueEl = host.querySelector('.nwValue');
+    const subEl = host.querySelector('.nwSub');
+    if (!canvas) return;
+    const baseValue = valueEl ? { cls: valueEl.className, html: valueEl.innerHTML } : null;
+    const baseSub = subEl ? { cls: subEl.className, html: subEl.innerHTML } : null;
+
+    const restoreHeadline = () => {
+        if (valueEl && baseValue) { valueEl.className = baseValue.cls; valueEl.innerHTML = baseValue.html; }
+        if (subEl && baseSub) { subEl.className = baseSub.cls; subEl.innerHTML = baseSub.html; }
+    };
+    const showHeadlineAt = (idx) => {
+        const pts = LAST_NW_SERIES?.points || [];
+        if (!pts.length) return;
+        const p = pts[clamp(idx, 0, pts.length - 1)];
+        const v = NW_MODE === 'return' ? (p.value - p.contributions) : p.value;
+        if (valueEl) {
+            valueEl.className = NW_MODE === 'return' ? `nwValue ${pnlClass(v)}` : 'nwValue';
+            valueEl.textContent = NW_MODE === 'return' ? fmtSignedMoney(v) : fmtCompactMoney(v);
         }
-        // Row-level delegates for visual indicator and live reflow while dragging (mouse)
-        tr.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            const draggingRow = tbody.querySelector('tr.dragging');
-            if (!draggingRow || draggingRow === tr) return;
-            // Clear previous indicators
-            tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drop-before','drop-after'));
-            const rect = tr.getBoundingClientRect();
-            const before = (e.clientY - rect.top) < rect.height / 2;
-            if (before) {
-                tr.classList.add('drop-before');
-                tbody.insertBefore(draggingRow, tr);
-            } else {
-                tr.classList.add('drop-after');
-                tbody.insertBefore(draggingRow, tr.nextSibling);
-            }
+        if (subEl) {
+            subEl.className = 'nwSub muted';
+            subEl.textContent = p.noData
+                ? `${fmtNwPointDate(p.date)} · no recorded activity`
+                : `${fmtNwPointDate(p.date)} · ${NW_MODE === 'return' ? 'return' : 'net worth'} at this point`;
+        }
+    };
+    const indexFromClientX = (clientX) => {
+        const pts = LAST_NW_SERIES?.points || [];
+        if (pts.length < 2) return null;
+        const rect = canvas.getBoundingClientRect();
+        const plotW = Math.max(10, rect.width - NW_CHART_PAD.l - NW_CHART_PAD.r);
+        const ratio = clamp((clientX - rect.left - NW_CHART_PAD.l) / plotW, 0, 1);
+        return Math.round(ratio * (pts.length - 1));
+    };
+    const setHover = (idx) => {
+        if (NW_HOVER_IDX === idx) return;
+        NW_HOVER_IDX = idx;
+        if (idx == null) restoreHeadline(); else showHeadlineAt(idx);
+        if (LAST_NW_SERIES) drawNetworthChart(canvas, LAST_NW_SERIES);
+    };
+    const moveTo = (clientX) => {
+        if (!LAST_NW_SERIES?.hasData) return;
+        setHover(indexFromClientX(clientX));
+    };
+
+    canvas.addEventListener('mousemove', (e) => moveTo(e.clientX));
+    canvas.addEventListener('mouseleave', () => setHover(null));
+    canvas.addEventListener('touchstart', (e) => { if (e.touches[0]) { moveTo(e.touches[0].clientX); e.preventDefault(); } }, { passive: false });
+    canvas.addEventListener('touchmove', (e) => { if (e.touches[0]) { moveTo(e.touches[0].clientX); e.preventDefault(); } }, { passive: false });
+    canvas.addEventListener('touchend', () => setHover(null));
+    canvas.addEventListener('touchcancel', () => setHover(null));
+}
+
+const statTile = (label, value, cls = '') =>
+    `<div class="statTile"><span class="statLabel">${escapeHtml(label)}</span><span class="statValue ${cls}">${value}</span></div>`;
+
+let ALLOC_VIEW = (function () { try { return localStorage.getItem('stock:allocView') || 'list'; } catch { return 'list'; } })();
+
+// Right pane bubbles: compact stats + allocation + realized-P&L sparkline.
+function renderSideBubbles() {
+    const host = els.sideBubbles;
+    if (!host) return;
+    const acc = getActiveAccount();
+    if (!acc) { host.innerHTML = ''; return; }
+    const holdings = POSTS.filter((p) => String(p.accountId) === String(acc.id));
+    const isWatch = acc.type === 'watchlist';
+    const totals = computeAccountTotals(holdings);
+    const cash = accountLedger(acc, holdings).cash;
+    host.innerHTML = `
+      ${isWatch ? '' : `<div class="statGrid">
+        ${statTile('Invested', totals.marketValue != null ? fmtCompactMoney(totals.marketValue) : '—')}
+        ${statTile('Cash', fmtCompactMoney(cash))}
+        ${statTile('Realized', fmtSignedMoney(totals.realizedPnl), pnlClass(totals.realizedPnl))}
+      </div>`}
+      <div class="panelCard">
+        <div class="panelCardHead">
+          <strong>Allocation</strong>
+          ${isWatch ? `<span class="muted">${holdings.length} tickers</span>` : `
+            <div class="segmentToggle allocViewToggle" id="allocViewToggle" role="group" aria-label="Allocation view">
+              <label class="segmentOption"><input type="radio" name="allocView" value="list" ${ALLOC_VIEW !== 'map' ? 'checked' : ''} /><span>List</span></label>
+              <label class="segmentOption"><input type="radio" name="allocView" value="map" ${ALLOC_VIEW === 'map' ? 'checked' : ''} /><span>Map</span></label>
+            </div>`}
+        </div>
+        <div id="allocationHost" class="allocationHost"></div>
+      </div>
+      ${isWatch ? '' : `<div class="panelCard">
+        <div class="panelCardHead"><strong>Realized P&amp;L</strong><span class="muted">over trades</span></div>
+        <div class="accountChartWrap"><canvas id="accountChartCanvas"></canvas></div>
+      </div>`}
+    `;
+    renderAllocation(document.getElementById('allocationHost'), holdings, totals, isWatch, cash);
+    document.getElementById('allocViewToggle')?.addEventListener('change', (e) => {
+        ALLOC_VIEW = e.target.value === 'map' ? 'map' : 'list';
+        try { localStorage.setItem('stock:allocView', ALLOC_VIEW); } catch {}
+        renderSideBubbles();
+    });
+    if (!isWatch) {
+        const cv = document.getElementById('accountChartCanvas');
+        if (cv) drawAccountPnlChart(cv, holdings);
+    }
+}
+
+function renderAllocation(host, holdings, totals, isWatch, cash = 0) {
+    if (!host) return;
+    if (isWatch) { host.classList.remove('isMap'); host.innerHTML = `<div class="muted allocEmpty">Watchlists track signals, not positions.</div>`; return; }
+    const rows = holdings.map((p) => {
+        const pos = holdingPosition(p);
+        return { id: p.id, ticker: holdingTicker(p), value: pos.marketValue || 0, pct: pos.pct };
+    }).filter((r) => r.value > 0).sort((a, b) => b.value - a.value);
+    if (cash > 0) rows.push({ ticker: 'Cash', value: cash, isCash: true, pct: null });
+    if (!rows.length) { host.classList.remove('isMap'); host.innerHTML = `<div class="muted allocEmpty">Add buy transactions or cash to see allocation.</div>`; return; }
+    const total = rows.reduce((s, r) => s + r.value, 0) || 1;
+    const shown = rows.slice(0, 9);
+    if (ALLOC_VIEW === 'map') { host.classList.add('isMap'); renderAllocationTreemap(host, shown, total); }
+    else { host.classList.remove('isMap'); renderAllocationBars(host, shown, total); }
+}
+
+function renderAllocationBars(host, rows, total) {
+    const palette = ['#165dff', '#177245', '#b7791f', '#9333ea', '#0891b2', '#b54753', '#0d9488', '#7c3aed'];
+    host.innerHTML = rows.map((r, i) => {
+        const pct = (r.value / total) * 100;
+        const color = r.isCash ? 'var(--muted)' : palette[i % palette.length];
+        return `
+          <div class="allocRow">
+            <div class="allocMeta"><span class="allocDot" style="background:${color}"></span><span class="allocTk">${escapeHtml(r.ticker)}</span><span class="allocPct muted">${pct.toFixed(1)}%</span></div>
+            <div class="allocBarTrack"><div class="allocBarFill" style="width:${pct.toFixed(1)}%;background:${color}"></div></div>
+            <div class="allocVal">${fmtCompactMoney(r.value)}</div>
+          </div>`;
+    }).join('');
+}
+
+// Heat color for a treemap cell from its unrealized P&L %: green/red tinted by
+// magnitude (capped at ±25% for full saturation), neutral gray when there's no
+// cost basis to compare against (e.g. the Cash cell).
+function pnlTintColor(pct, border = false) {
+    const n = Number(pct);
+    if (pct == null || isNaN(n) || n === 0) return border ? 'rgba(93, 103, 120, 0.32)' : 'rgba(93, 103, 120, 0.14)';
+    const mag = Math.min(Math.abs(n), 25) / 25;
+    const rgb = n > 0 ? '23, 114, 69' : '181, 71, 83';
+    const alpha = border ? (0.28 + mag * 0.42) : (0.16 + mag * 0.46);
+    return `rgba(${rgb}, ${alpha.toFixed(2)})`;
+}
+
+// Squarified treemap (Bruls/Huizing/van Wijk): lays positive-`value` items into a
+// [0,w]x[0,h] rectangle so areas stay proportional to value while keeping cells as
+// close to square as possible. Returns each item extended with pixel {x,y,w,h}.
+function squarifyTreemap(items, w, h) {
+    if (!items.length || w <= 0 || h <= 0) return [];
+    const total = items.reduce((s, it) => s + it.value, 0) || 1;
+    const scale = (w * h) / total;
+    const queue = items.map((it) => ({ ...it, area: it.value * scale }));
+    const rects = [];
+    let rx = 0, ry = 0, rw = w, rh = h, i = 0;
+    while (i < queue.length && rw > 0 && rh > 0) {
+        const side = Math.min(rw, rh);
+        let row = [queue[i]];
+        let worst = treemapWorstRatio(row, side);
+        let j = i + 1;
+        while (j < queue.length) {
+            const trial = row.concat([queue[j]]);
+            const trialWorst = treemapWorstRatio(trial, side);
+            if (trialWorst > worst) break;
+            row = trial; worst = trialWorst; j++;
+        }
+        i = j;
+        const rowArea = row.reduce((s, d) => s + d.area, 0);
+        const thickness = rowArea / side;
+        if (rw >= rh) {
+            let oy = ry;
+            row.forEach((d) => {
+                const len = (d.area / rowArea) * rh;
+                rects.push({ ...d, x: rx, y: oy, w: thickness, h: len });
+                oy += len;
+            });
+            rx += thickness; rw -= thickness;
+        } else {
+            let ox = rx;
+            row.forEach((d) => {
+                const len = (d.area / rowArea) * rw;
+                rects.push({ ...d, x: ox, y: ry, w: len, h: thickness });
+                ox += len;
+            });
+            ry += thickness; rh -= thickness;
+        }
+    }
+    return rects;
+}
+
+// Worst (largest) width:height aspect ratio that laying `row` out along a strip
+// of the given `side` length would produce — lower is squarer / more readable.
+function treemapWorstRatio(row, side) {
+    const sum = row.reduce((s, d) => s + d.area, 0);
+    if (sum <= 0 || side <= 0) return Infinity;
+    let amax = -Infinity, amin = Infinity;
+    row.forEach((d) => { if (d.area > amax) amax = d.area; if (d.area < amin) amin = d.area; });
+    const s2 = side * side, sum2 = sum * sum;
+    return Math.max((s2 * amax) / sum2, sum2 / (s2 * amin));
+}
+
+function renderAllocationTreemap(host, rows, total) {
+    const W = host.clientWidth || 280;
+    const H = host.clientHeight || 230;
+    const cells = squarifyTreemap(rows, W, H);
+    host.innerHTML = '';
+    cells.forEach((c) => {
+        const weightPct = (c.value / total) * 100;
+        const el = document.createElement('div');
+        el.className = 'treemapCell' + (c.isCash ? ' isCash' : '');
+        el.style.left = `${(c.x / W * 100).toFixed(3)}%`;
+        el.style.top = `${(c.y / H * 100).toFixed(3)}%`;
+        el.style.width = `${(c.w / W * 100).toFixed(3)}%`;
+        el.style.height = `${(c.h / H * 100).toFixed(3)}%`;
+        el.style.background = pnlTintColor(c.pct);
+        el.style.borderColor = pnlTintColor(c.pct, true);
+        el.title = `${c.ticker} · ${fmtCompactMoney(c.value)} · ${weightPct.toFixed(1)}% of account` +
+            (c.pct != null ? ` · ${fmtSignedPct(c.pct)} P&L` : '');
+        const tk = document.createElement('span');
+        tk.className = 'tmTk';
+        tk.textContent = c.ticker;
+        el.appendChild(tk);
+        if (c.w >= 56 && c.h >= 40) {
+            const wt = document.createElement('span');
+            wt.className = 'tmWeight';
+            wt.textContent = `${weightPct.toFixed(1)}%`;
+            el.appendChild(wt);
+        }
+        if (c.w >= 80 && c.h >= 56 && c.pct != null) {
+            const pl = document.createElement('span');
+            pl.className = `tmPnl ${pnlClass(c.pct)}`;
+            pl.textContent = fmtSignedPct(c.pct);
+            el.appendChild(pl);
+        }
+        if (c.id) el.addEventListener('click', () => openDetail(c.id));
+        host.appendChild(el);
+    });
+}
+
+// --- Net-worth-over-time chart ---------------------------------------
+let NW_PERIOD = (function () { try { return localStorage.getItem('stock:nwPeriod') || '6mo'; } catch { return '6mo'; } })();
+let NW_MODE = (function () { try { return localStorage.getItem('stock:nwMode') || 'value'; } catch { return 'value'; } })();
+let NETWORTH_CACHE = {};   // `${accountId}|${period}|${interval}` -> series
+let LAST_NW_SERIES = null; // for resize redraw
+let NW_HOVER_IDX = null;   // index into LAST_NW_SERIES.points while hovering/touching the chart
+
+const NW_CHART_PAD = { l: 60, r: 16, t: 16, b: 28 };
+
+// Calendar-day span of each fixed range. '5d' is labelled "1W"; 'all' is dynamic.
+const NW_RANGE_DAYS = { '1d': 1, '5d': 5, '1mo': 30, '3mo': 91, '6mo': 182, '1y': 365, '2y': 730 };
+
+// Explicit interval per fixed range, calibrated to ~8 trading hours/day (not 24h) so the tick
+// granularity matches how much data actually exists in a session. yfinance has no 10m bar, so
+// 1W uses the nearest valid interval (15m). 3M uses 1h (90m bars are only served for the last
+// ~60 days by yfinance, which wouldn't cover the full 91-day window).
+const NW_RANGE_INTERVAL = {
+    '1d': '2m', '5d': '15m', '1mo': '1h', '3mo': '1h', '6mo': '1d', '1y': '1d', '2y': '1wk',
+};
+
+// yfinance's selectable intervals, with bar duration (minutes) and the max lookback yfinance
+// will serve for each. Intraday bars are only available for short spans: 1m ≤ 7d; the
+// 2m–90m group ≤ 60d; 1h ≤ 730d. Daily+ bars have effectively unlimited history.
+const NW_INTERVALS = [
+    { key: '1m',  min: 1,     maxDays: 7 },
+    { key: '2m',  min: 2,     maxDays: 60 },
+    { key: '5m',  min: 5,     maxDays: 60 },
+    { key: '15m', min: 15,    maxDays: 60 },
+    { key: '30m', min: 30,    maxDays: 60 },
+    { key: '1h',  min: 60,    maxDays: 730 },
+    { key: '90m', min: 90,    maxDays: 60 },
+    { key: '1d',  min: 1440,  maxDays: Infinity },
+    { key: '1wk', min: 10080, maxDays: Infinity },
+    { key: '1mo', min: 43200, maxDays: Infinity },
+];
+
+function nwIsIntraday(interval) { return interval === '1h' || /^\d+m$/.test(interval); }
+function nwIntervalMinutes(interval) {
+    const it = NW_INTERVALS.find((x) => x.key === interval);
+    return it ? it.min : 1440;
+}
+
+// Choose the yfinance interval whose bar duration is closest to span/100, so every range
+// renders ~100 samples. e.g. 1D → 1day/100 ≈ 14.4min → 15m; 3M → ~1day → 1d; 2Y → ~1wk.
+// Intervals whose max lookback can't cover the span are excluded.
+function nwIntervalForDays(days) {
+    const targetMin = (days * 1440) / 100;
+    let best = '1d', bestDiff = Infinity;
+    for (const it of NW_INTERVALS) {
+        if (days > it.maxDays) continue;
+        const diff = Math.abs(it.min - targetMin);
+        if (diff < bestDiff) { bestDiff = diff; best = it.key; }
+    }
+    return best;
+}
+
+// Smallest yfinance `period` string that fully covers `days` of history.
+function nwPeriodForDays(days) {
+    if (days <= 5) return '5d';
+    if (days <= 30) return '1mo';
+    if (days <= 91) return '3mo';
+    if (days <= 182) return '6mo';
+    if (days <= 365) return '1y';
+    if (days <= 730) return '2y';
+    if (days <= 1825) return '5y';
+    if (days <= 3650) return '10y';
+    return 'max';
+}
+
+// Earliest deposit/withdrawal/trade date for the account, as 'YYYY-MM-DD' (or null).
+function accountFirstActivityDate(acc, holdings) {
+    let min = null;
+    const consider = (d) => { const s = String(d || '').slice(0, 10); if (s && (min === null || s < min)) min = s; };
+    (acc?.cashFlows || []).forEach((cf) => consider(cf?.date));
+    (holdings || []).forEach((p) => (p.transactions || []).forEach((t) => {
+        if (t && (t.type === 'buy' || t.type === 'sell') && Number(t.shares) > 0) consider(t.date);
+    }));
+    return min;
+}
+
+function daysSinceDate(dateStr) {
+    if (!dateStr) return 0;
+    const a = new Date(`${dateStr}T00:00:00`);
+    if (isNaN(a.getTime())) return 0;
+    return Math.max(0, Math.round((Date.now() - a.getTime()) / 86400000));
+}
+
+// Resolve fetch/interval/clip-window for a range key. 'all' is dynamic: it spans from the
+// first account activity to today, with a sample interval (and therefore x-axis tick size)
+// of roughly span/100 — e.g. ~100 months of history yields ~monthly ticks.
+function nwRangeConfig(rangeKey, acc, holdings) {
+    if (rangeKey === 'all') {
+        const fa = accountFirstActivityDate(acc, holdings);
+        const days = fa ? daysSinceDate(fa) + 1 : 30;
+        return { key: 'all', days, interval: nwIntervalForDays(days), fetch: nwPeriodForDays(days) };
+    }
+    const days = NW_RANGE_DAYS[rangeKey] || 30;
+    const interval = NW_RANGE_INTERVAL[rangeKey] || nwIntervalForDays(days);
+    // Intraday spans need a couple of prior sessions seeded for carry-forward, so over-fetch
+    // the very short windows to 5d; otherwise fetch the window itself.
+    const fetch = nwIsIntraday(interval) && days <= 5 ? '5d' : rangeKey;
+    return { key: rangeKey, days, interval, fetch };
+}
+
+// Bucket key for a price-history timestamp: minute resolution (snapped to the interval grid)
+// for intraday intervals, calendar-day resolution otherwise (matches how transactions/cash
+// flows are dated). Intraday keys are 'YYYY-MM-DDTHH:MM'; daily keys are 'YYYY-MM-DD'.
+function nwBucketKey(ts, interval) {
+    if (!nwIsIntraday(interval)) return new Date(ts).toISOString().slice(0, 10);
+    const stepMs = nwIntervalMinutes(interval) * 60000;
+    const snapped = Math.floor(ts / stepMs) * stepMs;
+    return new Date(snapped).toISOString().slice(0, 16);
+}
+
+function fmtNwPointDate(ds) {
+    if (!ds) return '';
+    if (ds.length > 10) { // intraday bucket key: YYYY-MM-DDTHH or YYYY-MM-DDTHH:MM
+        const iso = ds.length >= 16 ? `${ds}:00Z` : `${ds}:00:00Z`;
+        const d = new Date(iso);
+        return isNaN(d.getTime()) ? ds : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+    return ds;
+}
+
+function invalidateNetworth(accountId) {
+    if (!accountId) { NETWORTH_CACHE = {}; return; }
+    Object.keys(NETWORTH_CACHE).forEach((k) => { if (k.startsWith(accountId + '|')) delete NETWORTH_CACHE[k]; });
+}
+
+async function loadNetworthChart(acc, holdings, period) {
+    const canvas = document.getElementById('networthCanvas');
+    if (!canvas) return;
+    const withTx = holdings.filter((p) => (p.transactions || []).length);
+    const ledger = accountLedger(acc, holdings);
+    const cfg = nwRangeConfig(period, acc, holdings);
+    const interval = cfg.interval;
+    const fetchPeriod = cfg.fetch;
+    const key = `${acc.id}|${period}|${interval}|${cfg.days}`;
+    NW_HOVER_IDX = null;
+    if (NETWORTH_CACHE[key]) { LAST_NW_SERIES = NETWORTH_CACHE[key]; drawNetworthChart(canvas, LAST_NW_SERIES); }
+    else { drawNetworthChart(canvas, null); }
+    if (!withTx.length) {
+        const flat = { points: [], contributions: ledger.contributions, netNow: ledger.cash, hasData: false };
+        NETWORTH_CACHE[key] = flat; LAST_NW_SERIES = flat; drawNetworthChart(canvas, flat);
+        return;
+    }
+    try {
+        const entries = await Promise.all(withTx.map(async (p) => {
+            const tk = holdingTicker(p);
+            try { return { p, tk, hist: await api(`/api/chart?ticker=${encodeURIComponent(tk)}&period=${encodeURIComponent(fetchPeriod)}&interval=${encodeURIComponent(interval)}`) }; }
+            catch { return { p, tk, hist: null }; }
+        }));
+        let series = computeNetworthSeries(entries, acc.cashFlows || [], interval);
+        // Clip to the visible window [today - span, today]. computeNetworthSeries keeps the
+        // pre-activity prefix flat and flags it as `noData`, so clipping just frames the
+        // selected range while preserving the gray "no data" lead-in within it.
+        if (series.hasData) {
+            const cutoff = Date.now() - cfg.days * 86400000;
+            const clipFrom = nwIsIntraday(interval)
+                ? new Date(cutoff).toISOString().slice(0, 16)
+                : new Date(cutoff).toISOString().slice(0, 10);
+            const clipped = series.points.filter((p) => p.date >= clipFrom);
+            if (clipped.length > 1) series = { ...series, points: clipped };
+        }
+        NETWORTH_CACHE[key] = series; LAST_NW_SERIES = series;
+        const cv = document.getElementById('networthCanvas');
+        if (cv && getActiveAccount()?.id === acc.id && NW_PERIOD === period) drawNetworthChart(cv, series);
+    } catch (e) { console.warn('net worth build failed', e); }
+}
+
+// Pure: per-day net worth (cash + holdings@close) AND contributions (net deposits,
+// incl. implied deposits backfilling under-funded buys) from price history,
+// transactions, and the account's cash flows.
+function computeNetworthSeries(entries, cashFlows, interval = '1d') {
+    const dateSet = new Set();
+    const closeMaps = {};
+    entries.forEach(({ tk, hist }) => {
+        const m = new Map();
+        if (hist && Array.isArray(hist.timestamps)) {
+            hist.timestamps.forEach((ts, i) => { const ds = nwBucketKey(ts, interval); m.set(ds, hist.closes[i]); dateSet.add(ds); });
+        }
+        closeMaps[tk] = m;
+    });
+    const txByTk = {};
+    entries.forEach(({ p, tk }) => {
+        txByTk[tk] = (p.transactions || [])
+            .filter((t) => t && (t.type === 'buy' || t.type === 'sell') && Number(t.shares) > 0)
+            .slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    });
+
+    // Ordered cash-event stream: deposits/withdrawals + buys/sells.
+    const events = [];
+    (cashFlows || []).forEach((cf) => { const amt = Number(cf?.amount) || 0; if (amt > 0) events.push({ date: String(cf.date || ''), kind: cf.type === 'withdrawal' ? 'withdraw' : 'deposit', amount: amt }); });
+    entries.forEach(({ p }) => (p.transactions || []).forEach((t) => {
+        if (!t || (t.type !== 'buy' && t.type !== 'sell') || !(Number(t.shares) > 0)) return;
+        const gross = Number(t.shares) * Number(t.price), fee = Number(t.fee) || 0;
+        events.push({ date: String(t.date || ''), kind: t.type, amount: t.type === 'buy' ? gross + fee : gross - fee });
+    }));
+    events.sort((a, b) => a.date.localeCompare(b.date));
+
+    // Daily close history can lag "today" by a session or more (e.g. a deposit/buy made
+    // today has no close yet). Without this, an event dated past the last available close
+    // is never walked — the series stays all-zero and the "trim empty prefix" step finds
+    // nothing to trim to. Stretch the date axis to cover every event plus today; the
+    // carry-forward `lastClose` below prices those extra days at the latest known close.
+    // For daily+ modes, adding the event date ensures transactions that fall after the last
+    // available close are still walked and their cash-flow effect is reflected. Intraday modes
+    // intentionally use only the real market-hours bars yfinance returns (see below).
+    const intraday = nwIsIntraday(interval);
+    events.forEach((e) => { if (e.date && !intraday) dateSet.add(e.date); });
+    if (!intraday) dateSet.add(todayLocalDate());
+
+    let dates = Array.from(dateSet).sort();
+
+    // Intraday: do NOT synthesize buckets for off-market spans. yfinance only returns bars
+    // during market hours, so plotting those bars directly (concatenated by sample index)
+    // gives a continuous Robinhood-style line — overnight/weekend gaps collapse to a single
+    // segment between sessions instead of a long flat carry-forward stretch. We also skip the
+    // "now" bucket so the line ends at the last real trade rather than dragging flat to the
+    // current off-market time.
+    if (!dates.length) return { points: [], contributions: 0, netNow: 0, hasData: false };
+
+    let cash = 0, contributions = 0, evi = 0;
+    const lastClose = {}; entries.forEach(({ tk }) => { lastClose[tk] = null; });
+    let points = dates.map((ds) => {
+        while (evi < events.length && events[evi].date <= ds) {
+            const e = events[evi++];
+            if (e.kind === 'deposit') { cash += e.amount; contributions += e.amount; }
+            else if (e.kind === 'withdraw') { cash -= e.amount; contributions -= e.amount; }
+            else if (e.kind === 'buy') { if (cash < e.amount - 1e-9) { const s = e.amount - cash; cash += s; contributions += s; } cash -= e.amount; }
+            else if (e.kind === 'sell') { cash += e.amount; }
+        }
+        let holdings = 0;
+        entries.forEach(({ tk }) => {
+            const c = closeMaps[tk].get(ds); if (c != null) lastClose[tk] = c;
+            const close = lastClose[tk]; if (close == null) return;
+            let sh = 0;
+            for (const t of txByTk[tk]) { if (String(t.date || '') <= ds) sh += (t.type === 'buy' ? 1 : -1) * Number(t.shares); else break; }
+            if (sh > 0) holdings += sh * close;
         });
-        tr.addEventListener('dragleave', () => tr.classList.remove('drop-before','drop-after'));
-        tr.addEventListener('drop', async (e) => {
-            e.preventDefault();
-            tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drop-before','drop-after'));
-            // Persist new order
-            const newOrder = Array.from(tbody.querySelectorAll('tr')).map(r => r.getAttribute('data-id')).filter(Boolean);
-            try {
-                await api('/api/stocks/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: newOrder }) });
-                HAS_CUSTOM_ORDER = true;
-                try { localStorage.setItem('feed:customOrder', '1'); } catch {}
-                syncWatchlistPanelActions();
-                // Reflect local POSTS order immediately without reloading
-                const byId = new Map(POSTS.map(x => [x.id, x]));
-                POSTS = newOrder.map(id => byId.get(id)).filter(Boolean).concat(POSTS.filter(x => !newOrder.includes(x.id)));
-                showToast('Order saved');
-            } catch (err) {
-                console.warn('Failed to save order', err);
-            }
-        });
-        // Touch-based reordering fallback for phones (no native drag & drop)
-        handle?.addEventListener('touchstart', (e) => {
-            const t = e.touches[0];
-            TOUCH_DND.active = true; dragStarted = true;
-            TOUCH_DND.row = tr; TOUCH_DND.tbody = tbody;
-            tr.classList.add('dragging');
-            e.preventDefault();
-        }, { passive: false });
-        tr.addEventListener("click", (ev) => {
-            // ignore click if it was a drag (mouse) or just ended touch DnD
-            if (dragStarted) return;
-            if (window.__touchDndJustEnded && (Date.now() - window.__touchDndJustEnded) < 600) return;
-            // ignore clicks on handle that might be slight
-            if (ev.target && ev.target.closest('.drag-handle')) return;
-            openDetail(post.id);
-        });
-        tbody.appendChild(tr);
+        return { date: ds, value: cash + holdings, contributions };
+    });
+    // Instead of trimming the empty prefix before first activity, keep those points and flag
+    // them `noData`, flattening them to the first real value. The chart renders that span as a
+    // flat gray line back to the start of the selected range (rather than a misleading drop to
+    // zero), so a 1-day-old account still fills out a 1M/3M window with a clear "no data" lead-in.
+    const firstEvent = events.length ? events[0].date.slice(0, 10) : null;
+    if (firstEvent) {
+        let firstRealIdx = points.findIndex((p) => p.date.slice(0, 10) >= firstEvent);
+        if (firstRealIdx < 0) firstRealIdx = points.length - 1;
+        const seed = points[firstRealIdx] || points[points.length - 1];
+        const seedVal = seed ? seed.value : 0;
+        const seedContrib = seed ? seed.contributions : 0;
+        points = points.map((p, i) => i < firstRealIdx
+            ? { ...p, value: seedVal, contributions: seedContrib, noData: true }
+            : p);
+    }
+    return { points, contributions, netNow: points.length ? points[points.length - 1].value : 0, hasData: true };
+}
+
+function hexA(hex, a) {
+    const m = String(hex).trim().match(/^#?([0-9a-f]{6})$/i);
+    if (!m) return hex;
+    const n = parseInt(m[1], 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+// Draws Value (net worth + dashed contributions baseline) or Return (value − contributions).
+function drawNetworthChart(canvas, series) {
+    const { ctx, w, h } = prepCanvas(canvas, Math.max(240, canvas.clientHeight || 320));
+    ctx.clearRect(0, 0, w, h);
+    const muted = cssVar('--muted', '#5d6778');
+    const buy = cssVar('--buy', '#177245'), sell = cssVar('--sell', '#b54753'), border = cssVar('--border', 'rgba(0,0,0,.1)');
+    const returnMode = NW_MODE === 'return';
+    ctx.font = '12px "IBM Plex Sans", sans-serif'; ctx.textBaseline = 'middle';
+    if (!series || !series.hasData || !(series.points || []).length) {
+        ctx.fillStyle = muted; ctx.textAlign = 'center';
+        const msg = series && series.netNow != null
+            ? `${returnMode ? 'Return' : 'Net worth'} ${fmtCompactMoney(returnMode ? (series.netNow - (series.contributions || 0)) : series.netNow)} — record transactions to chart history.`
+            : 'Loading…';
+        ctx.fillText(msg, w / 2, h / 2);
+        return;
+    }
+    const pts = series.points;
+    const pv = (p) => returnMode ? (p.value - p.contributions) : p.value;
+    const { l: padL, r: padR, t: padT, b: padB } = NW_CHART_PAD;
+    const plotW = Math.max(10, w - padL - padR), plotH = Math.max(10, h - padT - padB);
+    if (pts.length === 1) {
+        const v = pv(pts[0]), y = padT + plotH / 2;
+        ctx.strokeStyle = border; ctx.lineWidth = 1;
+        ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = cssVar('--text', '#142032'); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.font = '15px "Space Grotesk", sans-serif';
+        ctx.fillText(returnMode ? fmtSignedMoney(v) : fmtCompactMoney(v), padL + plotW / 2, y - 6);
+        ctx.fillStyle = muted; ctx.textBaseline = 'top'; ctx.font = '12px "IBM Plex Sans", sans-serif';
+        ctx.fillText(`${fmtNwPointDate(pts[0].date)} · add more history to see a trend`, padL + plotW / 2, y + 6);
+        return;
+    }
+    const baseVals = returnMode ? [] : pts.map((p) => p.contributions);
+    const lineVals = pts.map(pv);
+    const allVals = lineVals.concat(baseVals).concat(returnMode ? [0] : []);
+    let mn = Math.min(...allVals), mx = Math.max(...allVals);
+    if (mn === mx) { mn = mn - Math.abs(mn || 1) * 0.05; mx = mx + Math.abs(mx || 1) * 0.05; }
+    const padV = (mx - mn) * 0.08; mn -= padV; mx += padV;
+    if (!returnMode) mn = Math.max(0, mn);
+    const X = (i) => padL + plotW * (i / Math.max(1, pts.length - 1));
+    const Y = (v) => padT + plotH * (1 - (v - mn) / (mx - mn || 1));
+    const col = lineVals[lineVals.length - 1] >= lineVals[0] ? buy : sell;
+    // gridlines + y labels
+    ctx.fillStyle = muted; ctx.strokeStyle = border;
+    [mx, (mx + mn) / 2, mn].forEach((v) => {
+        ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(padL + plotW, Y(v)); ctx.stroke(); ctx.globalAlpha = 1;
+        ctx.textAlign = 'right'; ctx.fillText(returnMode ? fmtSignedMoney(v) : fmtCompactMoney(v), padL - 8, Y(v));
+    });
+    if (returnMode && mn < 0 && mx > 0) { // emphasize the zero line
+        ctx.strokeStyle = muted; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(padL, Y(0)); ctx.lineTo(padL + plotW, Y(0)); ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    // The leading `noData` points (before the account's first activity) are drawn as a flat
+    // gray line; the real series after them keeps the buy/sell color, area fill and baseline.
+    const firstRealIdx = Math.max(0, pts.findIndex((p) => !p.noData));
+    const baseY = Y(returnMode ? Math.max(mn, 0) : mn);
+    // area under the real (colored) segment only
+    if (firstRealIdx < pts.length - 1) {
+        ctx.beginPath();
+        for (let i = firstRealIdx; i < pts.length; i++) { const x = X(i), y = Y(pv(pts[i])); i === firstRealIdx ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+        ctx.lineTo(X(pts.length - 1), baseY); ctx.lineTo(X(firstRealIdx), baseY); ctx.closePath();
+        const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+        grad.addColorStop(0, hexA(col, 0.22)); grad.addColorStop(1, hexA(col, 0.02));
+        ctx.fillStyle = grad; ctx.fill();
+    }
+    // contributions baseline (value mode only)
+    if (!returnMode) {
+        ctx.strokeStyle = muted; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.beginPath();
+        pts.forEach((p, i) => { const x = X(i), y = Y(p.contributions); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+        ctx.stroke(); ctx.setLineDash([]);
+    }
+    // gray "no data" lead-in: flat line from the range start up to the first real point
+    if (firstRealIdx > 0) {
+        ctx.strokeStyle = muted; ctx.globalAlpha = 0.7; ctx.lineWidth = 2; ctx.beginPath();
+        for (let i = 0; i <= firstRealIdx; i++) { const x = X(i), y = Y(pv(pts[i])); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+        ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    // main (colored) line over the real segment
+    ctx.beginPath();
+    for (let i = firstRealIdx; i < pts.length; i++) { const x = X(i), y = Y(pv(pts[i])); i === firstRealIdx ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+    // mark the first real point when there is a gray lead-in
+    if (firstRealIdx > 0) {
+        ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(firstRealIdx), Y(pv(pts[firstRealIdx])), 3, 0, Math.PI * 2); ctx.fill();
+    }
+    // x labels (start / middle / end)
+    ctx.fillStyle = muted; ctx.textBaseline = 'top';
+    ctx.textAlign = 'left'; ctx.fillText(fmtNwPointDate(pts[0].date), padL, padT + plotH + 8);
+    if (pts.length > 2) { ctx.textAlign = 'center'; ctx.fillText(fmtNwPointDate(pts[Math.floor((pts.length - 1) / 2)].date), padL + plotW / 2, padT + plotH + 8); }
+    ctx.textAlign = 'right'; ctx.fillText(fmtNwPointDate(pts[pts.length - 1].date), padL + plotW, padT + plotH + 8);
+
+    // Hover/touch crosshair: vertical + horizontal guide lines and a dot on the series.
+    if (NW_HOVER_IDX != null && NW_HOVER_IDX >= 0 && NW_HOVER_IDX < pts.length) {
+        const x = X(NW_HOVER_IDX), y = Y(pv(pts[NW_HOVER_IDX]));
+        ctx.save();
+        ctx.strokeStyle = muted; ctx.globalAlpha = 0.7; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+    }
+}
+
+function renderHoldingsList() {
+    const host = els.holdingsList;
+    if (!host) return;
+    const acc = getActiveAccount();
+    const q = (els.searchBox?.value || '').toLowerCase().trim();
+    if (!acc) {
+        host.innerHTML = `<div class="empty-state"><div class="muted">Create an account to start tracking holdings.</div></div>`;
+        if (els.holdingsTitle) els.holdingsTitle.textContent = 'Holdings';
+        if (els.holdingsMeta) els.holdingsMeta.textContent = '';
+        return;
+    }
+    const isWatch = acc.type === 'watchlist';
+    const all = POSTS.filter((p) => String(p.accountId) === String(acc.id));
+    const holdings = holdingsForAccount(acc.id, q);
+    if (els.holdingsTitle) els.holdingsTitle.textContent = isWatch ? 'Watching' : 'Holdings';
+    if (els.holdingsMeta) {
+        els.holdingsMeta.textContent = q
+            ? `${holdings.length} of ${all.length} shown`
+            : `${all.length} ${isWatch ? 'tickers' : 'positions'}`;
     }
 
-    els.feed.innerHTML = '';
-    els.feed.appendChild(table);
+    if (!holdings.length) {
+        host.innerHTML = `<div class="empty-state">
+          <div class="muted">${q ? 'No holdings match your search.' : `No ${isWatch ? 'tickers' : 'holdings'} in this ${isWatch ? 'watchlist' : 'account'} yet.`}</div>
+          ${(q || !canEditAccount(acc)) ? '' : `<button class="primary addHoldingTrigger" type="button">+ Add ${isWatch ? 'Ticker' : 'Holding'}</button>`}
+        </div>`;
+        host.querySelectorAll('.addHoldingTrigger').forEach((b) => b.addEventListener('click', () => openNew()));
+        return;
+    }
 
-    // Background-refresh current prices for visible rows, throttled
+    const wrap = document.createElement('div');
+    wrap.className = 'holdingTable' + (isWatch ? ' isWatch' : '');
+    holdings.forEach((post) => wrap.appendChild(buildHoldingRow(post, isWatch)));
+    if (canEditAccount(acc)) wrap.appendChild(buildAddHoldingRow(isWatch));
+    host.innerHTML = '';
+    host.appendChild(wrap);
+
+    // Background-refresh current prices, throttled
     const now = Date.now();
-    const toRefresh = filtered.slice(0, 10); // cap to avoid flooding
-    toRefresh.forEach((p, i) => {
+    holdings.slice(0, 12).forEach((p, i) => {
         const last = LAST_REFRESH.get(p.id) || 0;
-        if (now - last < 60000) return; // skip if refreshed in last 60s
+        if (now - last < 60000) return;
         setTimeout(() => refreshSnapshot(p.id), i * 200);
     });
+}
+
+// Compact two-column row that fits the narrow side panel without overflow:
+// left = ticker + sub-line, right = value/last + P&L% + signal.
+function buildHoldingRow(post, isWatch) {
+    const ticker = holdingTicker(post);
+    const pos = holdingPosition(post);
+    const suggestion = getPrimarySuggestion(post);
+    const row = document.createElement('div');
+    row.className = `holdingRow rowAccent ${classBySuggestion(suggestion)}`;
+    row.setAttribute('data-id', post.id);
+    const running = ['queued', 'running'].includes(getStatusState(post));
+    const statusBadge = running ? getStatusBadgeHtml(post) : '';
+    const sigBadge = `<span class="badge suggestion ${classBySuggestion(suggestion)}">${escapeHtml(suggestion || '')}</span>`;
+    const pendingComments = pendingCommentCount(post);
+    const commentDot = pendingComments ? `<span class="commentDot" title="${pendingComments} un-handled comment${pendingComments === 1 ? '' : 's'}"></span>` : '';
+
+    let sub, primary, secondary;
+    if (isWatch) {
+        sub = post.title && post.title !== ticker ? post.title : (post.note || 'watching');
+        primary = pos.current != null ? fmtMoney(pos.current) : '—';
+        secondary = '';
+    } else if (pos.shares > 0) {
+        sub = `${fmtShares(pos.shares)} sh · avg ${pos.avgCost != null ? fmtMoney(pos.avgCost) : '—'}`;
+        primary = pos.marketValue != null ? fmtCompactMoney(pos.marketValue) : '—';
+        const pnlAbs = pos.unrealizedPnl;
+        secondary = pnlAbs != null
+            ? `<span class="${pnlClass(pnlAbs)}">${fmtSignedMoney(pnlAbs)}${pos.pct != null ? ` · ${fmtSignedPct(pos.pct)}` : ''}</span>`
+            : '';
+    } else {
+        sub = post.title && post.title !== ticker ? post.title : 'no position';
+        primary = pos.current != null ? fmtMoney(pos.current) : '—';
+        secondary = '<span class="muted">not held</span>';
+    }
+
+    row.innerHTML = `
+      <div class="hMain">
+        <div class="hTopline"><span class="htk">${escapeHtml(ticker)}</span> ${sigBadge}${statusBadge}${commentDot}</div>
+        <div class="hSub muted">${escapeHtml(sub)}</div>
+      </div>
+      <div class="hStats">
+        <div class="hPrimary">${primary}</div>
+        <div class="hSecondary">${secondary}</div>
+      </div>`;
+    row.addEventListener('click', () => openDetail(post.id));
+    return row;
+}
+
+// Add-holding action styled as a row at the bottom of the holdings list.
+function buildAddHoldingRow(isWatch) {
+    const row = document.createElement('div');
+    row.className = 'holdingRow holdingAddRow';
+    row.setAttribute('role', 'button');
+    row.setAttribute('tabindex', '0');
+    row.innerHTML = `
+      <div class="hMain">
+        <div class="hTopline"><span class="htk">+ Add ${isWatch ? 'Ticker' : 'Holding'}</span></div>
+      </div>`;
+    const trigger = () => openNew();
+    row.addEventListener('click', trigger);
+    row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); trigger(); }
+    });
+    return row;
 }
 
 function rowSuggestion(p, primary) {
@@ -1000,35 +1760,42 @@ function rowSuggestion(p, primary) {
     return pt.suggestion || "Hold";
 }
 
+function fillAccountSelect(selectedId) {
+    if (!els.pAccount) return;
+    els.pAccount.innerHTML = ACCOUNTS.map((a) =>
+        `<option value="${a.id}" ${String(a.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(a.name)}${a.type === 'watchlist' ? ' (watchlist)' : ''}</option>`
+    ).join('');
+}
+
 function openNew() {
+    const acc = getActiveAccount();
+    if (!canEditAccount(acc)) { unlockAccount(acc); return; }
     editingId = null;
-    els.dlgTitle.textContent = 'New Watchlist';
-    els.saveDlg.textContent = 'Save Watchlist';
+    els.dlgTitle.textContent = 'Add Holding';
+    els.saveDlg.textContent = 'Save Holding';
+    els.pTicker.value = "";
     els.pTitle.value = "";
-    els.pTickers.value = "";
-    els.pDesc.value = "";
-    els.pPurchases.value = "";
-    setFormFromOptions(APP_CONFIG.defaultOptions || {});
-    els.pDate.value = todayLocalDate();
+    els.pNote.value = "";
+    fillAccountSelect((getActiveAccount() || {}).id);
     els.postDlg.showModal();
+    setTimeout(() => { try { els.pTicker.focus(); } catch {} }, 40);
 }
 
 function openEdit(p) {
     editingId = p.id;
-    els.dlgTitle.textContent = 'Edit Watchlist';
-    els.saveDlg.textContent = 'Update Watchlist';
+    els.dlgTitle.textContent = 'Edit Holding';
+    els.saveDlg.textContent = 'Update Holding';
+    els.pTicker.value = holdingTicker(p);
     els.pTitle.value = p.title || "";
-    els.pTickers.value = (p.tickers || []).join(", ");
-    els.pDesc.value = p.description || "";
-    const kv = Object.entries(p.purchases || {}).map(([k, v]) => `${k}=${v}`).join(", ");
-    els.pPurchases.value = kv;
-    setFormFromOptions(p.options || {});
+    els.pNote.value = p.note || p.description || "";
+    fillAccountSelect(p.accountId);
     els.postDlg.showModal();
 }
 
 async function removePost(id) {
-    if (!confirm("Delete this post?")) return;
+    if (!confirm("Delete this holding and its transaction history?")) return;
     await api(`/api/stocks/${encodeURIComponent(id)}`, { method: "DELETE" });
+    invalidateNetworth();
     await loadPosts();
     els.detailDlg.close();
 }
@@ -1124,21 +1891,21 @@ function renderAnalyzeButton(id) {
         return;
     }
     if (state === 'running') {
-        els.dAnalyze.textContent = 'Stop analysis';
+        els.dAnalyze.textContent = 'Stop';
         els.dAnalyze.classList.add('state-running');
         return;
     }
     if (state === 'queued') {
-        els.dAnalyze.textContent = 'Remove from queue';
+        els.dAnalyze.textContent = 'Dequeue';
         els.dAnalyze.classList.add('state-queued');
         return;
     }
     if (state === 'stopped') {
-        els.dAnalyze.textContent = 'Queue again';
+        els.dAnalyze.textContent = 'Requeue';
         els.dAnalyze.classList.add('state-stopped');
         return;
     }
-    els.dAnalyze.textContent = post.analysis?.completedAt ? 'Re-run analysis' : 'Queue analysis';
+    els.dAnalyze.textContent = post.analysis?.completedAt ? 'Re-run' : 'Analyze';
     els.dAnalyze.classList.add('primary');
 }
 
@@ -1167,7 +1934,7 @@ function startDetailAutoRefresh(id) {
             const fresh = await api(`/api/stocks/${encodeURIComponent(id)}`);
             upsertPost(fresh);
             syncDetailPanels(fresh);
-            renderFeed();
+            renderAll();
         } catch (error) {
             console.warn('detail auto refresh failed', error);
         }
@@ -1179,14 +1946,17 @@ function syncDetailPanels(post) {
     const options = normalizedOptions(post.options || {});
     const preset = getPresetInfo(options);
     const status = getStatusState(post);
-    if (els.dTitle) els.dTitle.textContent = post.title || 'Watchlist';
+    const account = accountById(post.accountId);
+    const pos = holdingPosition(post);
+    if (els.dTitle) els.dTitle.textContent = `${holdingTicker(post)}${post.title && post.title !== holdingTicker(post) ? ' · ' + post.title : ''}`;
     if (els.dSubtitle) {
         const subtitleParts = [
-            (post.tickers || []).join(', '),
+            account ? account.name : null,
+            pos.shares > 0 ? `${fmtShares(pos.shares)} sh @ ${fmtMoney(pos.avgCost)}` : 'no position',
             preset.label || 'Balanced',
             status,
         ].filter(Boolean);
-        els.dSubtitle.textContent = subtitleParts.join(' | ');
+        els.dSubtitle.textContent = subtitleParts.join(' · ');
     }
 
     const metaGrid = document.getElementById('dMetaGrid');
@@ -1201,7 +1971,31 @@ function syncDetailPanels(post) {
     }
 
     const snapshotHost = document.getElementById('dSnapshot');
-    if (snapshotHost) snapshotHost.innerHTML = renderSnapshotTable(post);
+    if (snapshotHost) snapshotHost.innerHTML = renderPositionCard(post);
+
+    const txnList = document.getElementById('txnList');
+    if (txnList) txnList.innerHTML = renderTxnList(post);
+    bindTxnListActions(post.id);
+
+    const commentsHost = document.getElementById('dComments');
+    if (commentsHost) {
+        commentsHost.innerHTML = renderComments(post);
+        bindCommentActions(post.id);
+    }
+    const commentsMeta = document.getElementById('dCommentsMeta');
+    if (commentsMeta) {
+        const total = (post.comments || []).length;
+        const pending = pendingCommentCount(post);
+        commentsMeta.textContent = total ? `${total} total${pending ? ` · ${pending} un-handled` : ''}` : '';
+    }
+    const tradeMeta = document.getElementById('tradeMeta');
+    if (tradeMeta) {
+        const n = (post.transactions || []).length;
+        tradeMeta.textContent = n ? `${n} transaction${n === 1 ? '' : 's'} · realized ${fmtSignedMoney(pos.realizedPnl)}` : 'No transactions yet — add a buy to start tracking.';
+    }
+    // Redraw the trade chart if its panel is currently visible.
+    const tradePanel = els.dContent?.querySelector('.detailPanel[data-tab="trades"]');
+    if (tradePanel && !tradePanel.hidden) redrawTradeChart(post.id);
 
     const reportHost = document.getElementById('reportHost');
     if (reportHost) renderReportInto(reportHost, currentReportText(post));
@@ -1218,15 +2012,18 @@ function openDetail(id) {
     const p = getPostById(id);
     if (!p) return;
 
-    const tickers = p.tickers || [];
-    const primary = tickers[0] || '';
+    const primary = holdingTicker(p);
     els.dContent.innerHTML = `
-        <section class="detailSection">
+        <div class="detailTabs" id="detailTabs" role="tablist">
+            <button type="button" class="detailTab is-active" data-tab="overview">Overview</button>
+            <button type="button" class="detailTab" data-tab="trades">Trades &amp; P&amp;L</button>
+            <button type="button" class="detailTab" data-tab="fundamentals">Fundamentals</button>
+            <button type="button" class="detailTab" data-tab="report">Report</button>
+        </div>
+
+        <section class="detailPanel" data-tab="overview">
             <div id="dMetaGrid" class="detailMetaGrid"></div>
             <div id="dProgressHost"></div>
-        </section>
-        <section class="detailSection">
-            <div id="dTickerTabs" class="inline"></div>
             <div class="chartWrap">
                 <div class="chartHead">
                     <div class="chartTitleBlock">
@@ -1235,7 +2032,7 @@ function openDetail(id) {
                         <div id="cCursorMeta" class="chartCursorMeta">Touch, drag, or hover the chart to inspect the active area.</div>
                     </div>
                     <div class="chartSettingsAnchor">
-                        <button id="cSettingsBtn" class="chartSettingsBtn" type="button" aria-expanded="false" aria-controls="cSettingsPopover">⚙ Settings</button>
+                        <button id="cSettingsBtn" class="chartSettingsBtn" type="button" aria-expanded="false" aria-controls="cSettingsPopover" aria-label="Chart settings">⚙ <span class="btnTxt">Settings</span></button>
                         <div id="cSettingsPopover" class="chartSettingsPopover" role="menu" aria-hidden="true">
                             <div class="chartSettingsBody">
                                 <div class="chartSettingsGroup">
@@ -1285,20 +2082,55 @@ function openDetail(id) {
                     </div>
                 </div>
             </div>
-        </section>
-        <section class="detailSection">
-            <div class="rowgrid">
-                <div>
-                    <h3>Snapshot</h3>
+            <div class="overviewSplit">
+                <div class="panelCard">
+                    <div class="panelCardHead"><strong>Position</strong></div>
                     <div id="dSnapshot"></div>
                 </div>
-                <div>
-                    <h3>Summary</h3>
+                <div class="panelCard">
+                    <div class="panelCardHead"><strong>Summary</strong></div>
                     <pre id="dSummary" class="pre-card"></pre>
                 </div>
             </div>
+            <div class="panelCard commentsCard">
+                <div class="panelCardHead"><strong>Comments</strong> <span class="muted" id="dCommentsMeta"></span></div>
+                <div class="commentComposer">
+                    <textarea id="commentInput" rows="2" placeholder="Add a comment…"></textarea>
+                    <button class="primary" id="addCommentBtn" type="button">Add</button>
+                </div>
+                <div id="dComments" class="commentList"></div>
+            </div>
         </section>
-        <section class="detailSection">
+
+        <section class="detailPanel" data-tab="trades" hidden>
+            <div class="txnHead">
+                <div>
+                    <h3>Trade history &amp; P&amp;L</h3>
+                    <p class="sectionNote" id="tradeMeta"></p>
+                </div>
+                <div class="inline" style="gap:6px">
+                    <button class="ghost buyBtn" id="addBuyBtn" type="button">+ Buy</button>
+                    <button class="ghost sellBtn" id="addSellBtn" type="button">+ Sell</button>
+                </div>
+            </div>
+            <div class="tradeChartWrap"><canvas id="tradeChartCanvas"></canvas></div>
+            <div class="tradeChartLegend" id="tradeChartLegend"></div>
+            <div id="txnList" class="txnList"></div>
+        </section>
+
+        <section class="detailPanel" data-tab="fundamentals" hidden>
+            <div class="fundHead">
+                <div>
+                    <h3>Fundamentals</h3>
+                    <p class="sectionNote" id="fundMeta">Key metrics from yfinance, scored against the cheat-sheet benchmarks.</p>
+                </div>
+                <button class="ghost" id="fundGuideBtn" type="button">Open Metric Guide</button>
+            </div>
+            <div id="fundamentalsHost"></div>
+        </section>
+
+        <section class="detailPanel" data-tab="report" hidden>
+            ${analysisConfigMarkup()}
             <div class="inline" style="justify-content:space-between; width:100%; margin-bottom:10px; gap:8px;">
                 <h3 style="margin:0">Report</h3>
                 <div class="inline" style="gap:6px">
@@ -1310,13 +2142,56 @@ function openDetail(id) {
         </section>
     `;
 
-    const tabs = document.getElementById('dTickerTabs');
-    tickers.forEach((ticker) => {
-        const button = document.createElement('button');
-        button.textContent = ticker;
-        button.addEventListener('click', () => loadChartInto(ticker));
-        tabs.appendChild(button);
+    // Detail sub-tab switching
+    const detailTabs = els.dContent.querySelector('#detailTabs');
+    const detailPanels = Array.from(els.dContent.querySelectorAll('.detailPanel'));
+    function showDetailTab(name) {
+        detailTabs.querySelectorAll('.detailTab').forEach((b) => b.classList.toggle('is-active', b.dataset.tab === name));
+        detailPanels.forEach((panel) => { panel.hidden = panel.dataset.tab !== name; });
+        if (name === 'overview') { setTimeout(() => redrawActiveChart(), 0); }
+        else if (name === 'trades') { setTimeout(() => redrawTradeChart(id), 0); }
+        else if (name === 'fundamentals') { loadFundamentalsInto(primary); }
+    }
+    detailTabs.addEventListener('click', (e) => {
+        const btn = e.target.closest('.detailTab');
+        if (btn) showDetailTab(btn.dataset.tab);
     });
+
+    // TradingAgents config (Report tab): populate from the holding's saved options, keep preset
+    // cards interactive, and persist edits back to the holding.
+    setFormFromOptions(p.options || {});
+    els.dContent.querySelectorAll('input[name="analysisPreset"]').forEach((input) => {
+        input.addEventListener('change', () => setPresetOnForm(input.value, true));
+    });
+    const persistAnalysisConfig = async () => {
+        const fresh = getPostById(id) || p;
+        const options = buildOptionsFromForm();
+        const body = {
+            ticker: holdingTicker(fresh),
+            accountId: fresh.accountId,
+            title: fresh.title || holdingTicker(fresh),
+            note: fresh.note || fresh.description || '',
+            options,
+        };
+        const saved = await api(`/api/stocks/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        upsertPost(saved);
+        return saved;
+    };
+    const saveCfgBtn = document.getElementById('saveAnalysisCfg');
+    if (saveCfgBtn) {
+        saveCfgBtn.onclick = async () => {
+            saveCfgBtn.disabled = true;
+            try {
+                await persistAnalysisConfig();
+                saveCfgBtn.textContent = 'Saved';
+                setTimeout(() => { saveCfgBtn.textContent = 'Save settings'; }, 1200);
+            } catch (e) {
+                showToast(`Could not save settings: ${e.message || e}`);
+            } finally {
+                saveCfgBtn.disabled = false;
+            }
+        };
+    }
 
     const reportHost = document.getElementById('reportHost');
     if (reportHost) reportHost.__mode = reportHost.__mode || 'md';
@@ -1324,6 +2199,24 @@ function openDetail(id) {
     const toggleBtn = document.getElementById('toggleMdBtn');
     els.detailDlg.showModal();
     bindChartControls(primary);
+    document.getElementById('addBuyBtn')?.addEventListener('click', () => openTxnDlg(id, 'buy'));
+    document.getElementById('addSellBtn')?.addEventListener('click', () => openTxnDlg(id, 'sell'));
+    document.getElementById('fundGuideBtn')?.addEventListener('click', () => openGuide(primary));
+    const addCommentBtn = document.getElementById('addCommentBtn');
+    const commentInput = document.getElementById('commentInput');
+    if (addCommentBtn && commentInput) {
+        const submit = () => {
+            const text = commentInput.value.trim();
+            if (!text) { commentInput.focus(); return; }
+            addCommentBtn.disabled = true;
+            addComment(id, text).then(() => { commentInput.value = ''; }).finally(() => { addCommentBtn.disabled = false; });
+        };
+        addCommentBtn.addEventListener('click', submit);
+        commentInput.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit(); }
+        });
+    }
+    refreshDetailEditMode(p);
 
     if (toggleBtn && reportHost) {
         toggleBtn.onclick = () => {
@@ -1364,13 +2257,15 @@ function openDetail(id) {
         if (st === 'running' || st === 'queued') {
             try { await api(`/api/queue/stop/${encodeURIComponent(id)}`, { method: 'POST' }); } catch {}
         } else {
+            // Persist the latest Report-tab config so the run uses the on-screen settings.
+            try { await persistAnalysisConfig(); } catch {}
             try {
                 await api(`/api/queue/${encodeURIComponent(id)}`, { method: 'POST' });
             } catch {}
         }
         await loadQueueStatus();
         renderAnalyzeButton(id);
-        renderFeed();
+        renderAll();
         const fresh = await api(`/api/stocks/${encodeURIComponent(id)}`).catch(() => null);
         if (fresh) {
             upsertPost(fresh);
@@ -1403,7 +2298,7 @@ async function refreshSnapshot(id, opts = {}) {
         const res = await api(`/api/refresh-snapshot/${encodeURIComponent(id)}`);
         upsertPost(res);
         LAST_REFRESH.set(id, now);
-        renderFeed();
+        renderAll();
         if (currentDetailId === id) {
             syncDetailPanels(res);
         }
@@ -1415,31 +2310,27 @@ async function refreshSnapshot(id, opts = {}) {
     }
 }
 
-function renderSnapshotTable(p) {
-        if (!(p.tickers || []).length) {
-                return '<div class="muted">No tickers configured yet.</div>';
-        }
-    const rows = [];
-    const sn = p.snapshot || {};
-    const purchases = p.purchases || {};
-    (p.tickers || []).forEach(t => {
-        const s = sn[t] || {};
-        rows.push(`
-      <tr>
-                <td>${escapeHtml(t)}</td>
-        <td style="text-align:right">${fmtMoney(purchases[t])}</td>
-        <td style="text-align:right">${fmtMoney(s.current)}</td>
-        <td style="text-align:right">${s.pct == null ? "" : fmtPct(s.pct)}</td>
-                <td style="text-align:center"><span class="badge suggestion ${classBySuggestion(rowSuggestion(p, t))}">${escapeHtml(rowSuggestion(p, t))}</span></td>
-      </tr>
-    `);
-    });
+function renderPositionCard(p) {
+    const ticker = holdingTicker(p);
+    const pos = holdingPosition(p);
+    const row = (label, value, cls = '') => `
+        <div class="posRow"><span class="posLabel">${escapeHtml(label)}</span><span class="posValue ${cls}">${value}</span></div>`;
+    if (pos.shares > 0) {
+        return `
+          ${row('Shares', fmtShares(pos.shares))}
+          ${row('Avg cost', pos.avgCost != null ? fmtMoney(pos.avgCost) : '—')}
+          ${row('Last price', pos.current != null ? fmtMoney(pos.current) : '—')}
+          ${row('Market value', pos.marketValue != null ? fmtCompactMoney(pos.marketValue) : '—')}
+          ${row('Unrealized P&L', pos.unrealizedPnl != null ? `${fmtSignedMoney(pos.unrealizedPnl)} (${fmtSignedPct(pos.pct)})` : '—', pnlClass(pos.unrealizedPnl))}
+          ${row('Realized P&L', fmtSignedMoney(pos.realizedPnl), pnlClass(pos.realizedPnl))}
+        `;
+    }
     return `
-    <table class="table" style="margin-top:6px">
-      <thead><tr><th>Ticker</th><th style="text-align:right">Purchase</th><th style="text-align:right">Current</th><th style="text-align:right">% Change</th><th>Suggestion</th></tr></thead>
-      <tbody>${rows.join("")}</tbody>
-    </table>
-  `;
+      ${row('Last price', pos.current != null ? fmtMoney(pos.current) : '—')}
+      ${row('Position', 'Not held (watch only)', 'muted')}
+      ${row('Realized P&L', fmtSignedMoney(pos.realizedPnl), pnlClass(pos.realizedPnl))}
+      <div class="posHint muted">Add a buy transaction in the “Trades &amp; P&amp;L” tab to track ${escapeHtml(ticker)} as a position.</div>
+    `;
 }
 
 const CHART_PADDING = { left: 58, right: 16, top: 22, bottom: 32 };
@@ -2496,18 +3387,6 @@ function initChartInteractions(canvas) {
     };
 }
 
-async function queueAllWatchlists() {
-    const buttons = [els.runAllBtn, els.heroRunBtn].filter(Boolean);
-    buttons.forEach((button) => { button.disabled = true; });
-    try {
-        await api('/api/analyze-all', { method: 'POST' });
-        await loadPosts();
-        showToast('Queued all ready watchlists.');
-    } finally {
-        buttons.forEach((button) => { button.disabled = false; });
-    }
-}
-
 async function refreshAllSnapshots() {
     if (els.refreshPricesBtn) els.refreshPricesBtn.disabled = true;
     try {
@@ -2526,56 +3405,992 @@ async function refreshAllSnapshots() {
     }
 }
 
+// =====================================================================
+// Position math (client mirror of the server's average-cost accounting)
+// =====================================================================
+function computePosition(txns, current) {
+    const list = (Array.isArray(txns) ? txns.slice() : [])
+        .filter((t) => t && (t.type === 'buy' || t.type === 'sell') && Number(t.shares) > 0)
+        .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    let shares = 0, avg = 0, realized = 0, invested = 0;
+    for (const t of list) {
+        const qty = Number(t.shares) || 0, price = Number(t.price) || 0, fee = Number(t.fee) || 0;
+        if (t.type === 'buy') {
+            const ns = shares + qty;
+            if (ns > 0) avg = (avg * shares + price * qty) / ns;
+            shares = ns; invested += price * qty + fee;
+        } else {
+            const sq = shares > 0 ? Math.min(qty, shares) : 0;
+            realized += (price - avg) * sq - fee;
+            shares = Math.max(0, shares - qty); invested -= price * qty - fee;
+            if (shares <= 1e-9) shares = 0;
+        }
+    }
+    const avgCost = (shares > 0 && avg > 0) ? avg : null;
+    const marketValue = (current != null && shares) ? current * shares : null;
+    const unrealizedPnl = (current != null && avgCost != null && shares) ? (current - avgCost) * shares : null;
+    const pct = (avgCost != null && current != null) ? ((current - avgCost) / avgCost) * 100 : null;
+    return { shares, avgCost, current: current ?? null, marketValue, unrealizedPnl, realizedPnl: realized, invested };
+}
+
+function computeAccountTotals(holdings) {
+    let marketValue = 0, costBasis = 0, unrealized = 0, realized = 0, hasPos = false;
+    holdings.forEach((p) => {
+        const pos = holdingPosition(p);
+        realized += pos.realizedPnl || 0;
+        if (pos.shares > 0) {
+            hasPos = true;
+            if (pos.marketValue != null) marketValue += pos.marketValue;
+            if (pos.avgCost != null) costBasis += pos.avgCost * pos.shares;
+            if (pos.unrealizedPnl != null) unrealized += pos.unrealizedPnl;
+        }
+    });
+    return {
+        marketValue: hasPos ? marketValue : null,
+        costBasis: hasPos ? costBasis : null,
+        unrealizedPnl: hasPos ? unrealized : null,
+        realizedPnl: realized,
+        totalPnl: (hasPos || realized) ? (unrealized + realized) : null,
+        totalPnlPct: costBasis > 0 ? (unrealized / costBasis) * 100 : null,
+    };
+}
+
+// =====================================================================
+// Canvas helpers + the new charts
+// =====================================================================
+function prepCanvas(canvas, cssHeight) {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const cssW = canvas.clientWidth || canvas.parentElement?.clientWidth || 320;
+    const cssH = cssHeight || canvas.clientHeight || 220;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w: cssW, h: cssH };
+}
+function cssVar(name, fallback) {
+    try { const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return v || fallback; }
+    catch { return fallback; }
+}
+
+function redrawTradeChart(id) {
+    const post = getPostById(id);
+    const canvas = document.getElementById('tradeChartCanvas');
+    if (!post || !canvas) return;
+    const pos = holdingPosition(post);
+    drawTradeHistoryChart(canvas, post.transactions || [], pos.current);
+    const legend = document.getElementById('tradeChartLegend');
+    if (legend) {
+        legend.innerHTML = `
+            <span class="tlg"><span class="tlgSwatch line"></span> Shares held</span>
+            <span class="tlg"><span class="tlgSwatch buy"></span> Buy</span>
+            <span class="tlg"><span class="tlgSwatch sell"></span> Sell (green=gain / red=loss)</span>
+            <span class="tlg"><span class="tlgSwatch profit"></span> Cumulative profit</span>`;
+    }
+}
+
+// X = trades in order; left axis = shares (cumulative-holdings line + signed
+// per-trade bars, colored by realized P/L); right axis = $ cumulative profit.
+function drawTradeHistoryChart(canvas, txns, currentPrice) {
+    const list = (Array.isArray(txns) ? txns.slice() : [])
+        .filter((t) => t && (t.type === 'buy' || t.type === 'sell') && Number(t.shares) > 0)
+        .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    const { ctx, w, h } = prepCanvas(canvas, 270);
+    ctx.clearRect(0, 0, w, h);
+    const muted = cssVar('--muted', '#5d6778');
+    const border = cssVar('--border', 'rgba(20,32,50,0.12)');
+    const buyColor = cssVar('--buy', '#177245');
+    const sellColor = cssVar('--sell', '#b54753');
+    const accent = cssVar('--accent', '#165dff');
+    const text = cssVar('--text', '#142032');
+    ctx.font = '11px "IBM Plex Sans", sans-serif';
+    ctx.textBaseline = 'middle';
+    if (!list.length) {
+        ctx.fillStyle = muted; ctx.textAlign = 'center';
+        ctx.fillText('No transactions yet — add a buy to start your trade history.', w / 2, h / 2);
+        return;
+    }
+
+    let shares = 0, avg = 0, realized = 0;
+    const pts = [];
+    for (const t of list) {
+        const qty = Number(t.shares) || 0, price = Number(t.price) || 0, fee = Number(t.fee) || 0;
+        let signed = 0, sellProfit = null;
+        if (t.type === 'buy') {
+            const ns = shares + qty; if (ns > 0) avg = (avg * shares + price * qty) / ns; shares = ns; signed = qty;
+        } else {
+            const sq = shares > 0 ? Math.min(qty, shares) : 0;
+            sellProfit = (price - avg) * sq - fee; realized += sellProfit;
+            shares = Math.max(0, shares - qty); if (shares <= 1e-9) shares = 0; signed = -qty;
+        }
+        pts.push({ type: t.type, signed, shares, realized, sellProfit, price, date: t.date });
+    }
+    const unreal = (currentPrice != null && shares > 0 && avg > 0) ? (currentPrice - avg) * shares : 0;
+    const cumFinal = realized + unreal;
+
+    const padL = 44, padR = 58, padT = 16, padB = 46;
+    const plotW = Math.max(10, w - padL - padR), plotH = Math.max(10, h - padT - padB);
+    const n = pts.length;
+    const slot = plotW / n;
+    const barW = Math.min(26, Math.max(6, slot * 0.42));
+    const cx = (i) => padL + slot * (i + 0.5);
+
+    const upMax = Math.max(1, ...pts.map((p) => p.shares), ...pts.map((p) => Math.max(0, p.signed)));
+    const downMax = Math.max(0, ...pts.map((p) => Math.max(0, -p.signed)));
+    const sTop = upMax * 1.12, sBot = -(downMax * 1.12 || upMax * 0.04);
+    const ys = (v) => padT + plotH * (1 - (v - sBot) / (sTop - sBot));
+
+    const cums = pts.map((p) => p.realized).concat([cumFinal, 0]);
+    let pMin = Math.min(...cums), pMax = Math.max(...cums);
+    if (pMin === pMax) { pMax = pMin + 1; pMin = pMin - 1; }
+    const pPad = (pMax - pMin) * 0.14; pMin -= pPad; pMax += pPad;
+    const yp = (v) => padT + plotH * (1 - (v - pMin) / (pMax - pMin));
+
+    // shares zero baseline
+    ctx.strokeStyle = border; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, ys(0)); ctx.lineTo(padL + plotW, ys(0)); ctx.stroke();
+
+    // signed per-trade bars
+    pts.forEach((p, i) => {
+        const x = cx(i) - barW / 2;
+        const y0 = ys(0), y1 = ys(p.signed);
+        const color = p.type === 'buy' ? accent : ((p.sellProfit ?? 0) >= 0 ? buyColor : sellColor);
+        const top = Math.min(y0, y1), hgt = Math.max(1, Math.abs(y1 - y0));
+        ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = color; ctx.fillRect(x, top, barW, hgt); ctx.restore();
+        ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.strokeRect(x, top, barW, hgt);
+    });
+
+    // holdings line (cumulative shares)
+    ctx.strokeStyle = text; ctx.lineWidth = 2; ctx.beginPath();
+    pts.forEach((p, i) => { const X = cx(i), Y = ys(p.shares); i === 0 ? ctx.moveTo(X, Y) : ctx.lineTo(X, Y); });
+    ctx.stroke();
+    ctx.fillStyle = text;
+    pts.forEach((p, i) => { ctx.beginPath(); ctx.arc(cx(i), ys(p.shares), 2.6, 0, Math.PI * 2); ctx.fill(); });
+
+    // cumulative profit line (right axis), dashed
+    ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.setLineDash([5, 4]); ctx.beginPath();
+    pts.forEach((p, i) => { const X = cx(i), Y = yp(p.realized); i === 0 ? ctx.moveTo(X, Y) : ctx.lineTo(X, Y); });
+    if (unreal !== 0) ctx.lineTo(padL + plotW, yp(cumFinal));
+    ctx.stroke(); ctx.setLineDash([]);
+
+    // left axis labels (shares)
+    ctx.fillStyle = muted; ctx.textAlign = 'right';
+    ctx.fillText(String(Math.round(upMax)), padL - 6, ys(upMax));
+    ctx.fillText('0', padL - 6, ys(0));
+    if (downMax > 0) ctx.fillText('−' + Math.round(downMax), padL - 6, ys(-downMax));
+    // right axis labels ($)
+    ctx.textAlign = 'left';
+    ctx.fillText(fmtCompactMoney(pMax), padL + plotW + 6, yp(pMax));
+    ctx.fillText(fmtCompactMoney(pMin), padL + plotW + 6, yp(pMin));
+    ctx.fillStyle = cumFinal >= 0 ? buyColor : sellColor;
+    ctx.fillText(fmtCompactMoney(cumFinal), padL + plotW + 6, yp(cumFinal));
+
+    // x labels
+    ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const step = Math.max(1, Math.ceil(n / 6));
+    pts.forEach((p, i) => {
+        if (i % step !== 0 && i !== n - 1) return;
+        ctx.fillText((p.date || '').slice(5), cx(i), padT + plotH + 8);
+    });
+    // axis titles
+    ctx.save(); ctx.translate(11, padT + plotH / 2); ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = muted; ctx.fillText('shares', 0, 0); ctx.restore();
+}
+
+// Account-level cumulative realized P&L across all holdings, over time.
+function drawAccountPnlChart(canvas, holdings) {
+    const events = [];
+    holdings.forEach((p) => {
+        const list = (p.transactions || [])
+            .filter((t) => t && (t.type === 'buy' || t.type === 'sell') && Number(t.shares) > 0)
+            .slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+        let shares = 0, avg = 0;
+        for (const t of list) {
+            const qty = Number(t.shares) || 0, price = Number(t.price) || 0, fee = Number(t.fee) || 0;
+            if (t.type === 'buy') { const ns = shares + qty; if (ns > 0) avg = (avg * shares + price * qty) / ns; shares = ns; }
+            else { const sq = shares > 0 ? Math.min(qty, shares) : 0; events.push({ date: t.date, delta: (price - avg) * sq - fee }); shares = Math.max(0, shares - qty); if (shares <= 1e-9) shares = 0; }
+        }
+    });
+    events.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    const { ctx, w, h } = prepCanvas(canvas, 150);
+    ctx.clearRect(0, 0, w, h);
+    const muted = cssVar('--muted', '#5d6778'), buy = cssVar('--buy', '#177245'), sell = cssVar('--sell', '#b54753');
+    ctx.font = '11px "IBM Plex Sans", sans-serif'; ctx.textBaseline = 'middle';
+    if (!events.length) {
+        ctx.fillStyle = muted; ctx.textAlign = 'center';
+        ctx.fillText('Realized P&L appears here once you record sells.', w / 2, h / 2);
+        return;
+    }
+    let cum = 0; const pts = [{ cum: 0 }].concat(events.map((e) => { cum += e.delta; return { cum }; }));
+    const padL = 46, padR = 14, padT = 12, padB = 22;
+    const plotW = Math.max(10, w - padL - padR), plotH = Math.max(10, h - padT - padB);
+    let mn = Math.min(0, ...pts.map((p) => p.cum)), mx = Math.max(0, ...pts.map((p) => p.cum));
+    if (mn === mx) mx = mn + 1;
+    const pad = (mx - mn) * 0.14; mn -= pad; mx += pad;
+    const X = (i) => padL + plotW * (i / Math.max(1, pts.length - 1));
+    const Y = (v) => padT + plotH * (1 - (v - mn) / (mx - mn));
+    ctx.strokeStyle = cssVar('--border', 'rgba(0,0,0,.1)'); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, Y(0)); ctx.lineTo(padL + plotW, Y(0)); ctx.stroke();
+    const last = pts[pts.length - 1].cum; const col = last >= 0 ? buy : sell;
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
+    pts.forEach((p, i) => { const x = X(i), y = Y(p.cum); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+    ctx.stroke();
+    ctx.fillStyle = muted; ctx.textAlign = 'right';
+    ctx.fillText(fmtCompactMoney(mx), padL - 6, Y(mx));
+    ctx.fillText(fmtCompactMoney(mn), padL - 6, Y(mn));
+}
+
+// =====================================================================
+// Transactions UI
+// =====================================================================
+function txnTypeValue() {
+    return els.txnDlg.querySelector('input[name="txnType"]:checked')?.value || 'buy';
+}
+function openTxnDlg(holdingId, type = 'buy', txId = null) {
+    TXN_CTX = { holdingId, txId };
+    const post = getPostById(holdingId);
+    const tx = txId ? (post?.transactions || []).find((t) => t.id === txId) : null;
+    els.txnDlgTitle.textContent = (txId ? 'Edit ' : 'Add ') + 'Transaction';
+    els.txnDlgSub.textContent = post ? `${holdingTicker(post)}${post.title && post.title !== holdingTicker(post) ? ' · ' + post.title : ''}` : '';
+    const t = tx?.type || type;
+    els.txnDlg.querySelectorAll('input[name="txnType"]').forEach((r) => { r.checked = r.value === t; });
+    els.txnShares.value = tx?.shares ?? '';
+    els.txnPrice.value = tx?.price ?? '';
+    els.txnDate.value = tx?.date || todayLocalDate();
+    els.txnFee.value = tx?.fee ?? 0;
+    els.txnNote.value = tx?.note || '';
+    // For a new transaction, prefill the price with the latest known price to save typing.
+    if (!txId && post) {
+        const pos = holdingPosition(post);
+        if (pos.current != null) els.txnPrice.value = Number(pos.current).toFixed(2);
+        else prefillLatestPrice(holdingTicker(post));
+    }
+    updateTxnPreview();
+    els.txnDlg.showModal();
+    setTimeout(() => { try { els.txnShares.focus(); } catch {} }, 40);
+}
+async function prefillLatestPrice(ticker) {
+    if (!ticker) return;
+    try {
+        const d = await api(`/api/chart?ticker=${encodeURIComponent(ticker)}&period=5d&interval=1d`);
+        const closes = d && d.closes;
+        const last = Array.isArray(closes) && closes.length ? closes[closes.length - 1] : null;
+        // Only fill if the user hasn't already typed a price and the dialog is still open.
+        if (last != null && els.txnDlg.open && !els.txnPrice.value) {
+            els.txnPrice.value = Number(last).toFixed(2);
+            updateTxnPreview();
+        }
+    } catch { /* ignore */ }
+}
+function updateTxnPreview() {
+    if (!els.txnPreview) return;
+    const shares = parseFloat(els.txnShares.value), price = parseFloat(els.txnPrice.value), fee = parseFloat(els.txnFee.value) || 0;
+    const type = txnTypeValue();
+    if (isNaN(shares) || isNaN(price) || shares <= 0) { els.txnPreview.textContent = ''; return; }
+    const gross = shares * price; const net = type === 'buy' ? gross + fee : gross - fee;
+    els.txnPreview.innerHTML = `${type === 'buy' ? 'Total cost' : 'Net proceeds'}: <strong>${fmtMoney(net)}</strong> <span class="muted">(${fmtShares(shares)} × ${fmtMoney(price)}${fee ? ` ${type === 'buy' ? '+' : '−'} ${fmtMoney(fee)} fee` : ''})</span>`;
+}
+async function saveTxn() {
+    const { holdingId, txId } = TXN_CTX;
+    if (!holdingId) return;
+    const shares = parseFloat(els.txnShares.value), price = parseFloat(els.txnPrice.value);
+    if (isNaN(shares) || shares <= 0) { showToast('Enter a share quantity.'); els.txnShares.focus(); return; }
+    if (isNaN(price) || price < 0) { showToast('Enter a price.'); els.txnPrice.focus(); return; }
+    const body = { type: txnTypeValue(), shares, price, fee: parseFloat(els.txnFee.value) || 0, date: els.txnDate.value || todayLocalDate(), note: els.txnNote.value.trim() };
+    // Over-budget guard: a new buy that exceeds available cash prompts for a deposit.
+    if (!txId && body.type === 'buy') {
+        const post = getPostById(holdingId);
+        const acc = post ? accountById(post.accountId) : null;
+        if (acc && acc.type !== 'watchlist') {
+            const cash = accountLedger(acc, POSTS.filter((p) => String(p.accountId) === String(acc.id))).cash;
+            const cost = body.shares * body.price + (body.fee || 0);
+            if (cost > cash + 1e-9) {
+                els.txnDlg.close();
+                openCashDlg(acc, { mode: 'cover', cost, cash, shortfall: cost - cash, pending: { holdingId, body } });
+                return;
+            }
+        }
+    }
+    els.txnSave.disabled = true;
+    try { await commitTxn(holdingId, body, txId); els.txnDlg.close(); }
+    catch (e) { showToast(`Failed to save transaction: ${e.message || e}`); }
+    els.txnSave.disabled = false;
+}
+async function commitTxn(holdingId, body, txId) {
+    let saved;
+    if (txId) saved = await api(`/api/stocks/${encodeURIComponent(holdingId)}/transactions/${encodeURIComponent(txId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    else saved = await api(`/api/stocks/${encodeURIComponent(holdingId)}/transactions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    upsertPost(saved); invalidateNetworth(saved.accountId); renderAll();
+    if (currentDetailId === holdingId) syncDetailPanels(saved);
+    showToast('Transaction saved');
+    return saved;
+}
+async function deleteTxn(holdingId, txId) {
+    if (!confirm('Delete this transaction?')) return;
+    let saved;
+    try { saved = await api(`/api/stocks/${encodeURIComponent(holdingId)}/transactions/${encodeURIComponent(txId)}`, { method: 'DELETE' }); }
+    catch (e) { showToast(`Failed: ${e.message || e}`); return; }
+    upsertPost(saved); invalidateNetworth(saved.accountId); renderAll();
+    if (currentDetailId === holdingId) syncDetailPanels(saved);
+    showToast('Transaction deleted');
+}
+function renderTxnList(post) {
+    const list = (post.transactions || []).slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    if (!list.length) return '<div class="muted txnEmpty">No transactions recorded yet.</div>';
+    const editable = canEditHolding(post);
+    return list.map((t) => {
+        const isBuy = t.type === 'buy';
+        const total = (Number(t.shares) || 0) * (Number(t.price) || 0);
+        return `<div class="txnItem">
+            <span class="txnBadge ${isBuy ? 'buy' : 'sell'}">${isBuy ? 'BUY' : 'SELL'}</span>
+            <span class="txnQty">${fmtShares(t.shares)} <span class="muted">@</span> ${fmtMoney(t.price)}</span>
+            <span class="txnDate muted">${escapeHtml(t.date || '')}</span>
+            <span class="txnTotal">${fmtMoney(total)}</span>
+            ${editable ? `<span class="txnRowActions">
+                <button class="iconBtn txnEdit" data-tx="${t.id}" title="Edit">Edit</button>
+                <button class="iconBtn txnDel" data-tx="${t.id}" title="Delete" aria-label="Delete">✕</button>
+            </span>` : ''}
+        </div>`;
+    }).join('');
+}
+function bindTxnListActions(holdingId) {
+    const host = document.getElementById('txnList');
+    if (!host) return;
+    host.querySelectorAll('.txnEdit').forEach((b) => b.addEventListener('click', () => openTxnDlg(holdingId, 'buy', b.dataset.tx)));
+    host.querySelectorAll('.txnDel').forEach((b) => b.addEventListener('click', () => deleteTxn(holdingId, b.dataset.tx)));
+}
+
+// =====================================================================
+// Comments (freeform notes per holding; don't affect the position)
+// Add/delete are allowed in any mode; accept/discard require edit mode.
+// =====================================================================
+function renderComments(post) {
+    const list = (post.comments || []).slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    if (!list.length) return '<div class="muted commentEmpty">No comments yet.</div>';
+    const editable = canEditHolding(post);
+    return list.map((c) => {
+        const status = c.status || 'pending';
+        const statusLabel = status === 'accepted' ? 'Accepted' : status === 'discarded' ? 'Discarded' : 'Pending';
+        let actions = '';
+        if (editable && status === 'pending') {
+            actions = `
+                <button class="iconBtn commentAccept" data-c="${c.id}" title="Mark accepted">✓ Accept</button>
+                <button class="iconBtn commentDiscard" data-c="${c.id}" title="Mark discarded">Discard</button>`;
+        } else if (editable && status !== 'pending') {
+            actions = `<button class="iconBtn commentReopen" data-c="${c.id}" title="Mark un-handled again">Reopen</button>`;
+        }
+        return `<div class="commentItem status-${escapeHtml(status)}">
+            <div class="commentBody">
+                <div class="commentText">${escapeHtml(c.text || '')}</div>
+                <div class="commentMeta muted">${escapeHtml(formatRelativeTime(c.createdAt) || '')} · <span class="commentStatus">${statusLabel}</span></div>
+            </div>
+            <div class="commentActions">
+                ${actions}
+                <button class="iconBtn commentDel" data-c="${c.id}" title="Delete" aria-label="Delete">✕</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+function bindCommentActions(holdingId) {
+    const host = document.getElementById('dComments');
+    if (!host) return;
+    host.querySelectorAll('.commentAccept').forEach((b) => b.addEventListener('click', () => setCommentStatus(holdingId, b.dataset.c, 'accepted')));
+    host.querySelectorAll('.commentDiscard').forEach((b) => b.addEventListener('click', () => setCommentStatus(holdingId, b.dataset.c, 'discarded')));
+    host.querySelectorAll('.commentReopen').forEach((b) => b.addEventListener('click', () => setCommentStatus(holdingId, b.dataset.c, 'pending')));
+    host.querySelectorAll('.commentDel').forEach((b) => b.addEventListener('click', () => deleteComment(holdingId, b.dataset.c)));
+}
+async function addComment(holdingId, text) {
+    let saved;
+    try { saved = await api(`/api/stocks/${encodeURIComponent(holdingId)}/comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) }); }
+    catch (e) { showToast(`Failed to add comment: ${e.message || e}`); throw e; }
+    upsertPost(saved); renderHoldingsList();
+    if (currentDetailId === holdingId) syncDetailPanels(saved);
+    return saved;
+}
+async function setCommentStatus(holdingId, cid, status) {
+    let saved;
+    try { saved = await api(`/api/stocks/${encodeURIComponent(holdingId)}/comments/${encodeURIComponent(cid)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); }
+    catch (e) { showToast(`Failed: ${e.message || e}`); return; }
+    upsertPost(saved); renderHoldingsList();
+    if (currentDetailId === holdingId) syncDetailPanels(saved);
+}
+async function deleteComment(holdingId, cid) {
+    if (!confirm('Delete this comment?')) return;
+    let saved;
+    try { saved = await api(`/api/stocks/${encodeURIComponent(holdingId)}/comments/${encodeURIComponent(cid)}`, { method: 'DELETE' }); }
+    catch (e) { showToast(`Failed: ${e.message || e}`); return; }
+    upsertPost(saved); renderHoldingsList();
+    if (currentDetailId === holdingId) syncDetailPanels(saved);
+}
+// Show/hide the detail's edit-only controls based on the holding's lock state.
+function refreshDetailEditMode(post) {
+    if (!post || !els.detailDlg?.open) return;
+    const editable = canEditHolding(post);
+    const setShown = (el, shown) => { if (el) el.style.display = shown ? '' : 'none'; };
+    setShown(els.dEdit, editable);
+    setShown(els.dDelete, editable);
+    setShown(els.dAnalyze, editable);
+    setShown(document.getElementById('addBuyBtn'), editable);
+    setShown(document.getElementById('addSellBtn'), editable);
+    const saveCfg = document.getElementById('saveAnalysisCfg');
+    setShown(saveCfg, editable);
+    // Re-render comment/txn lists so their per-row edit actions match the mode.
+    syncDetailPanels(post);
+}
+
+// =====================================================================
+// Account dialog
+// =====================================================================
+function openAccountDlg(acc) {
+    ACCOUNT_EDIT_ID = acc?.id || null;
+    els.accountDlgTitle.textContent = acc ? 'Edit Account' : 'New Account';
+    els.accName.value = acc?.name || '';
+    const type = acc?.type || 'account';
+    els.accountDlg.querySelectorAll('input[name="accType"]').forEach((r) => { r.checked = r.value === type; });
+    if (els.accKeyword) els.accKeyword.value = acc?.keyword || '';
+    if (els.accKeywordHint) {
+        els.accKeywordHint.textContent = acc?.keyword
+            ? 'This account is locked with the keyword above. Clear it to remove the lock, or change it to set a new one.'
+            : "Set a keyword to make this account read-only until unlocked. It's not a secret — just guards against accidental edits.";
+    }
+    if (els.accDelete) els.accDelete.style.display = acc ? '' : 'none';
+    els.accSave.textContent = acc ? 'Save' : 'Create';
+    els.accountDlg.showModal();
+    setTimeout(() => { try { els.accName.focus(); } catch {} }, 40);
+}
+async function saveAccount() {
+    const name = els.accName.value.trim();
+    if (!name) { showToast('Name the account.'); els.accName.focus(); return; }
+    const type = els.accountDlg.querySelector('input[name="accType"]:checked')?.value || 'account';
+    const keyword = (els.accKeyword?.value || '').trim();
+    els.accSave.disabled = true;
+    let saved;
+    try {
+        if (ACCOUNT_EDIT_ID) saved = await api(`/api/accounts/${encodeURIComponent(ACCOUNT_EDIT_ID)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, type, keyword }) });
+        else saved = await api('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, type, keyword }) });
+    } catch (e) { showToast(`Failed: ${e.message || e}`); els.accSave.disabled = false; return; }
+    // Keep the just-edited account unlocked this session so setting a keyword
+    // doesn't immediately lock the user out mid-edit.
+    if (saved?.id && keyword) UNLOCKED_ACCOUNTS.add(String(saved.id));
+    els.accSave.disabled = false; els.accountDlg.close();
+    const wasCreating = !ACCOUNT_EDIT_ID;
+    await loadAccounts();
+    if (wasCreating && saved?.id) setActiveAccountSilently(saved.id);
+    renderAll();
+    showToast('Account saved');
+}
+async function deleteAccount() {
+    if (!ACCOUNT_EDIT_ID) return;
+    const acc = accountById(ACCOUNT_EDIT_ID);
+    const owned = POSTS.filter((p) => String(p.accountId) === String(ACCOUNT_EDIT_ID));
+    const msg = owned.length
+        ? `Delete "${acc?.name}"? Its ${owned.length} holding(s) will move to another account.`
+        : `Delete "${acc?.name}"?`;
+    if (!confirm(msg)) return;
+    try { await api(`/api/accounts/${encodeURIComponent(ACCOUNT_EDIT_ID)}`, { method: 'DELETE' }); }
+    catch (e) { showToast(`Failed: ${e.message || e}`); return; }
+    els.accountDlg.close();
+    if (String(ACTIVE_ACCOUNT_ID) === String(ACCOUNT_EDIT_ID)) ACTIVE_ACCOUNT_ID = null;
+    await loadAccounts();
+    await loadPosts();
+    showToast('Account deleted');
+}
+
+// =====================================================================
+// Cash dialog: adjust cash (deposit/withdraw) + "deposit to cover a buy"
+// =====================================================================
+let CASH_CTX = { accountId: null, mode: 'adjust', pending: null, shortfall: 0, cost: 0, cash: 0 };
+function cashTypeValue() { return els.cashDlg.querySelector('input[name="cashType"]:checked')?.value || 'deposit'; }
+function openCashDlg(account, opts = {}) {
+    if (!account) return;
+    const mode = opts.mode || 'adjust';
+    CASH_CTX = { accountId: account.id, mode, pending: opts.pending || null, shortfall: opts.shortfall || 0, cost: opts.cost || 0, cash: opts.cash || 0 };
+    const cover = mode === 'cover';
+    els.cashDlgTitle.textContent = cover ? 'Deposit to Buy' : 'Adjust Cash';
+    els.cashDlgSub.textContent = account.name || '';
+    els.cashTypeToggle.style.display = cover ? 'none' : '';
+    els.cashDlg.querySelectorAll('input[name="cashType"]').forEach((r) => { r.checked = r.value === 'deposit'; });
+    if (els.cashCoverMsg) {
+        els.cashCoverMsg.hidden = !cover;
+        if (cover) els.cashCoverMsg.innerHTML = `This buy costs <strong>${fmtMoney(opts.cost)}</strong> but you have <strong>${fmtMoney(opts.cash)}</strong> cash. Deposit at least <strong>${fmtMoney(opts.shortfall)}</strong> to continue — or cancel the purchase.`;
+    }
+    els.cashAmount.value = cover ? (Math.round(opts.shortfall * 100) / 100) : '';
+    els.cashDate.value = (cover && opts.pending?.body?.date) ? opts.pending.body.date : todayLocalDate();
+    els.cashNote.value = cover ? 'Deposit to cover purchase' : '';
+    els.cashCancel.textContent = cover ? 'Cancel purchase' : 'Cancel';
+    els.cashSave.textContent = cover ? 'Deposit & Buy' : 'Save';
+    updateCashHint();
+    els.cashDlg.showModal();
+    setTimeout(() => { try { els.cashAmount.focus(); } catch {} }, 40);
+}
+function updateCashHint() {
+    if (!els.cashHint) return;
+    const amt = parseFloat(els.cashAmount.value);
+    if (CASH_CTX.mode === 'cover') {
+        const ok = !isNaN(amt) && amt >= CASH_CTX.shortfall - 1e-9;
+        els.cashSave.disabled = !ok;
+        els.cashHint.innerHTML = ok
+            ? `<span class="pos">Covers it. Cash after the buy: ${fmtMoney(CASH_CTX.cash + amt - CASH_CTX.cost)}</span>`
+            : `<span class="neg">Deposit at least ${fmtMoney(CASH_CTX.shortfall)} to enable the purchase.</span>`;
+    } else {
+        els.cashSave.disabled = isNaN(amt) || amt <= 0;
+        els.cashHint.textContent = '';
+    }
+}
+async function addCashFlow(account, flow) {
+    const updated = await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cashFlows: [...(account.cashFlows || []), flow] }),
+    });
+    const idx = ACCOUNTS.findIndex((a) => a.id === updated.id);
+    if (idx >= 0) ACCOUNTS[idx] = updated;
+    return updated;
+}
+async function saveCash() {
+    const acc = accountById(CASH_CTX.accountId);
+    if (!acc) return;
+    const amount = parseFloat(els.cashAmount.value);
+    if (isNaN(amount) || amount <= 0) { showToast('Enter an amount.'); els.cashAmount.focus(); return; }
+    const cover = CASH_CTX.mode === 'cover';
+    if (cover && amount < CASH_CTX.shortfall - 1e-9) { showToast(`Deposit at least ${fmtMoney(CASH_CTX.shortfall)}.`); return; }
+    const type = cover ? 'deposit' : cashTypeValue();
+    const flow = { type, amount: Math.round(amount * 100) / 100, date: els.cashDate.value || todayLocalDate(), note: els.cashNote.value.trim() };
+    els.cashSave.disabled = true;
+    try {
+        await addCashFlow(acc, flow);
+        if (cover && CASH_CTX.pending) await commitTxn(CASH_CTX.pending.holdingId, CASH_CTX.pending.body, null);
+    } catch (e) { showToast(`Failed: ${e.message || e}`); els.cashSave.disabled = false; return; }
+    els.cashSave.disabled = false; els.cashDlg.close();
+    invalidateNetworth(acc.id); renderAll();
+    if (currentDetailId && CASH_CTX.pending && currentDetailId === CASH_CTX.pending.holdingId) {
+        const fresh = getPostById(currentDetailId); if (fresh) syncDetailPanels(fresh);
+    }
+    showToast(cover ? 'Deposit recorded · purchase added' : 'Cash updated');
+}
+
+// =====================================================================
+// Fundamentals (live numbers scored against cheat-sheet benchmarks)
+// =====================================================================
+function gradeBands(v, bands) {
+    for (const b of bands) { if (v <= b.max) return { tone: b.tone, text: b.text }; }
+    return null;
+}
+const G = {
+    pe: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 15, tone: 'green', text: 'cheap' }, { max: 25, tone: 'amber', text: 'fair' }, { max: 40, tone: 'amber', text: 'premium' }, { max: Infinity, tone: 'red', text: 'expensive' }]),
+    peg: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'n/a' }, { max: 1, tone: 'green', text: 'undervalued' }, { max: 2, tone: 'amber', text: 'fair' }, { max: Infinity, tone: 'red', text: 'expensive' }]),
+    ps: (v) => gradeBands(v, [{ max: 2, tone: 'green', text: 'cheap' }, { max: 10, tone: 'amber', text: 'normal' }, { max: 20, tone: 'amber', text: 'rich' }, { max: Infinity, tone: 'red', text: 'speculative' }]),
+    pb: (v) => gradeBands(v, [{ max: 1, tone: 'green', text: 'below book' }, { max: 10, tone: 'amber', text: 'typical' }, { max: 30, tone: 'blue', text: 'tech-normal' }, { max: Infinity, tone: 'red', text: 'rich' }]),
+    ev: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 10, tone: 'green', text: 'cheap' }, { max: 20, tone: 'amber', text: 'typical' }, { max: 30, tone: 'amber', text: 'premium' }, { max: Infinity, tone: 'red', text: 'rich' }]),
+    gm: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 30, tone: 'red', text: 'thin' }, { max: 45, tone: 'amber', text: 'mixed' }, { max: 65, tone: 'amber', text: 'solid' }, { max: Infinity, tone: 'green', text: 'excellent' }]),
+    om: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 10, tone: 'amber', text: 'thin' }, { max: 25, tone: 'amber', text: 'healthy' }, { max: Infinity, tone: 'green', text: 'efficient' }]),
+    nm: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 5, tone: 'amber', text: 'thin' }, { max: 20, tone: 'amber', text: 'normal' }, { max: Infinity, tone: 'green', text: 'excellent' }]),
+    roe: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 10, tone: 'red', text: 'poor' }, { max: 20, tone: 'amber', text: 'healthy' }, { max: Infinity, tone: 'green', text: 'excellent' }]),
+    roa: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 5, tone: 'red', text: 'low' }, { max: 10, tone: 'amber', text: 'ok' }, { max: Infinity, tone: 'green', text: 'efficient' }]),
+    em: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 15, tone: 'red', text: 'thin' }, { max: 30, tone: 'amber', text: 'solid' }, { max: Infinity, tone: 'green', text: 'strong' }]),
+    rg: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'shrinking' }, { max: 10, tone: 'amber', text: 'slow' }, { max: 30, tone: 'amber', text: 'solid' }, { max: Infinity, tone: 'green', text: 'hypergrowth' }]),
+    eg: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'falling' }, { max: 20, tone: 'amber', text: 'solid' }, { max: Infinity, tone: 'green', text: 'strong' }]),
+    de: (v) => gradeBands(v, [{ max: 0.5, tone: 'green', text: 'fortress' }, { max: 2, tone: 'amber', text: 'manageable' }, { max: 3, tone: 'amber', text: 'elevated' }, { max: Infinity, tone: 'red', text: 'leveraged' }]),
+    cr: (v) => gradeBands(v, [{ max: 1, tone: 'red', text: 'liquidity risk' }, { max: 1.5, tone: 'amber', text: 'adequate' }, { max: Infinity, tone: 'green', text: 'comfortable' }]),
+    fm: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'burning' }, { max: 10, tone: 'red', text: 'low' }, { max: 25, tone: 'amber', text: 'good' }, { max: Infinity, tone: 'green', text: 'elite' }]),
+    fy: (v) => gradeBands(v, [{ max: 0, tone: 'red', text: 'negative' }, { max: 2, tone: 'red', text: 'low' }, { max: 5, tone: 'amber', text: 'fair' }, { max: Infinity, tone: 'green', text: 'attractive' }]),
+    nc: (v) => (v >= 0 ? { tone: 'green', text: 'net cash' } : { tone: 'red', text: 'net debt' }),
+};
+const U = { X: 'x', PCT: 'pct', MONEY: 'money', NUM: 'num' };
+const FUND_GROUPS = [
+    { title: 'Valuation', metrics: [
+        { key: 'peTrailing', label: 'P/E (trailing)', unit: U.X, grade: G.pe },
+        { key: 'peForward', label: 'P/E (forward)', unit: U.X, grade: G.pe },
+        { key: 'peg', label: 'PEG ratio', unit: U.NUM, grade: G.peg },
+        { key: 'ps', label: 'Price / Sales', unit: U.X, grade: G.ps },
+        { key: 'pb', label: 'Price / Book', unit: U.X, grade: G.pb },
+        { key: 'evEbitda', label: 'EV / EBITDA', unit: U.X, grade: G.ev },
+    ]},
+    { title: 'Profitability', metrics: [
+        { key: 'grossMargin', label: 'Gross margin', unit: U.PCT, grade: G.gm },
+        { key: 'operatingMargin', label: 'Operating margin', unit: U.PCT, grade: G.om },
+        { key: 'netMargin', label: 'Net margin', unit: U.PCT, grade: G.nm },
+        { key: 'ebitdaMargin', label: 'EBITDA margin', unit: U.PCT, grade: G.em },
+        { key: 'roe', label: 'Return on equity', unit: U.PCT, grade: G.roe },
+        { key: 'roa', label: 'Return on assets', unit: U.PCT, grade: G.roa },
+    ]},
+    { title: 'Growth', metrics: [
+        { key: 'revenueGrowth', label: 'Revenue growth (YoY)', unit: U.PCT, grade: G.rg },
+        { key: 'earningsGrowth', label: 'Earnings growth (YoY)', unit: U.PCT, grade: G.eg },
+    ]},
+    { title: 'Financial health', metrics: [
+        { key: 'debtToEquity', label: 'Debt / Equity', unit: U.NUM, grade: G.de },
+        { key: 'currentRatio', label: 'Current ratio', unit: U.NUM, grade: G.cr },
+        { key: 'netCash', label: 'Net cash', unit: U.MONEY, grade: G.nc },
+    ]},
+    { title: 'Cash flow', metrics: [
+        { key: 'freeCashflow', label: 'Free cash flow', unit: U.MONEY, grade: null },
+        { key: 'fcfMargin', label: 'FCF margin', unit: U.PCT, grade: G.fm },
+        { key: 'fcfYield', label: 'FCF yield', unit: U.PCT, grade: G.fy },
+    ]},
+];
+function fmtMetric(unit, v) {
+    if (v == null || isNaN(v)) return '—';
+    if (unit === U.PCT) return `${Number(v).toFixed(1)}%`;
+    if (unit === U.MONEY) return fmtCompactMoney(v);
+    if (unit === U.X) return `${Number(v).toFixed(1)}x`;
+    return Number(v).toFixed(2);
+}
+async function loadFundamentalsInto(ticker) {
+    const host = document.getElementById('fundamentalsHost');
+    if (!host) return;
+    if (host.__loaded && host.__loadedTicker === ticker) return;
+    host.innerHTML = '<div class="muted fundLoading">Loading fundamentals…</div>';
+    try {
+        const data = await api(`/api/fundamentals/${encodeURIComponent(ticker)}`);
+        host.__loaded = true; host.__loadedTicker = ticker;
+        renderFundamentals(host, data);
+    } catch (e) {
+        host.innerHTML = `<div class="muted">Could not load fundamentals: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+}
+function renderFundamentals(host, data) {
+    const m = data.metrics || {};
+    if (!data.available || !Object.keys(m).length) {
+        host.innerHTML = `<div class="muted fundEmpty">No fundamental data for ${escapeHtml(data.ticker || '')}${data.error ? ` (${escapeHtml(data.error)})` : ''}. This is common for ETFs and indices.</div>`;
+        return;
+    }
+    const groupsHtml = FUND_GROUPS.map((g) => {
+        const rows = g.metrics.filter((def) => m[def.key] != null).map((def) => {
+            const v = m[def.key];
+            const grade = def.grade ? def.grade(v) : null;
+            return `<tr>
+                <td class="fmName">${escapeHtml(def.label)}</td>
+                <td class="fmVal">${fmtMetric(def.unit, v)}</td>
+                <td class="fmBench">${grade ? `<span class="pill pill-${grade.tone}">${escapeHtml(grade.text)}</span>` : ''}</td>
+            </tr>`;
+        }).join('');
+        if (!rows) return '';
+        return `<div class="fundGroup"><div class="fundGroupHead">${escapeHtml(g.title)}</div><table class="fundTable"><tbody>${rows}</tbody></table></div>`;
+    }).join('');
+    const sub = [data.sector, data.industry].filter(Boolean).join(' · ');
+    const head = `<div class="fundTopline">
+        <div><strong>${escapeHtml(data.name || data.ticker)}</strong>${sub ? ` <span class="muted">${escapeHtml(sub)}</span>` : ''}</div>
+        ${m.marketCap ? `<div class="muted">Mkt cap ${fmtCompactMoney(m.marketCap)}</div>` : ''}
+    </div>`;
+    host.innerHTML = head + `<div class="fundGroups">${groupsHtml}</div>` +
+        `<div class="fundFoot muted">Color bands are general tech-stock guidelines from the Metric Guide — context, not advice.</div>`;
+}
+
+// =====================================================================
+// Metric Guide (standalone cheat sheet, interactive)
+// =====================================================================
+let GUIDE_BUILT = false;
+function openGuide(ticker) {
+    if (!GUIDE_BUILT) { buildGuideContent(); GUIDE_BUILT = true; }
+    els.guideDlg.showModal();
+    if (ticker && els.mgTickerInput) {
+        els.mgTickerInput.value = ticker;
+        loadGuideTicker();
+    }
+}
+const GUIDE_TABS = [
+    { id: 'valuation', label: 'Valuation', cards: [
+        { name: 'Price-to-Earnings', abbr: 'P/E', key: 'peTrailing', unit: U.X, grade: G.pe, formula: 'Price ÷ EPS', desc: 'What you pay for $1 of annual earnings. High P/E = the market expects strong growth.', pills: [['green', '<15 cheap'], ['amber', '15–25 fair'], ['red', '>40 priced for growth']] },
+        { name: 'PEG ratio', abbr: 'PEG', key: 'peg', unit: U.NUM, grade: G.peg, formula: 'P/E ÷ EPS growth %', desc: "Fixes P/E's blind spot for growth. PEG ≈ 1 is considered fairly valued (Peter Lynch).", pills: [['green', '<1 undervalued'], ['amber', '1–2 fair'], ['red', '>2 expensive']] },
+        { name: 'Price-to-Sales', abbr: 'P/S', key: 'ps', unit: U.X, grade: G.ps, formula: 'Market cap ÷ Revenue', desc: 'Used when there are no profits yet. Says nothing about profitability.', pills: [['green', '<2 cheap'], ['amber', '2–10 normal'], ['red', '>20 speculative']] },
+        { name: 'Price-to-Book', abbr: 'P/B', key: 'pb', unit: U.X, grade: G.pb, formula: 'Price ÷ Book value/share', desc: 'Price vs. net assets. Tech often runs 10–30x because value is intangible.', pills: [['green', '<1 below book'], ['amber', '1–5 typical'], ['blue', '10–30 software']] },
+        { name: 'EV / EBITDA', abbr: 'EV/EBITDA', key: 'evEbitda', unit: U.X, grade: G.ev, formula: '(Mkt cap + Debt − Cash) ÷ EBITDA', desc: "P/E's smarter sibling — strips out capital structure so you can compare across debt levels.", pills: [['green', '<10 cheap'], ['amber', '10–20 typical'], ['red', '>30 premium']] },
+    ]},
+    { id: 'profitability', label: 'Profitability', cards: [
+        { name: 'Gross margin', abbr: 'GM%', key: 'grossMargin', unit: U.PCT, grade: G.gm, formula: '(Revenue − COGS) ÷ Revenue', desc: 'Left after the direct cost of the product. Software 70–80%; hardware 30–50%.', pills: [['green', '70–85% software'], ['amber', '40–60% mixed'], ['red', '<30% commodity']] },
+        { name: 'Operating margin', abbr: 'EBIT%', key: 'operatingMargin', unit: U.PCT, grade: G.om, formula: 'Operating income ÷ Revenue', desc: 'The “real” margin after running the business (R&D, sales, admin).', pills: [['green', '>25% efficient'], ['amber', '10–25% healthy'], ['red', 'negative']] },
+        { name: 'Net profit margin', abbr: 'NM%', key: 'netMargin', unit: U.PCT, grade: G.nm, formula: 'Net income ÷ Revenue', desc: 'Bottom-line profit after taxes & interest. A big gap vs. operating margin = lots of debt.', pills: [['green', '>20% excellent'], ['amber', '5–20% normal'], ['red', 'negative']] },
+        { name: 'Return on Equity', abbr: 'ROE', key: 'roe', unit: U.PCT, grade: G.roe, formula: 'Net income ÷ Equity', desc: 'Profit per $ of shareholder capital. Buffett likes >15% consistently.', pills: [['green', '>20% excellent'], ['amber', '10–20% healthy'], ['red', '<10% poor']] },
+        { name: 'Return on Assets', abbr: 'ROA', key: 'roa', unit: U.PCT, grade: G.roa, formula: 'Net income ÷ Total assets', desc: 'Profit per $ of assets. Asset-light software scores very high.', pills: [['green', '>10% efficient'], ['amber', '5–10% ok'], ['red', '<5% heavy']] },
+    ]},
+    { id: 'growth', label: 'Growth', cards: [
+        { name: 'Revenue growth (YoY)', abbr: 'Rev YoY', key: 'revenueGrowth', unit: U.PCT, grade: G.rg, formula: '(Rev₂ − Rev₁) ÷ Rev₁', desc: 'The single most-watched number. High-P/E names need 20%+ to justify the premium.', pills: [['green', '>30% hyper'], ['amber', '10–30% solid'], ['red', '<10% slowing']] },
+        { name: 'EPS growth (YoY)', abbr: 'EPS YoY', key: 'earningsGrowth', unit: U.PCT, grade: G.eg, formula: '(EPS₂ − EPS₁) ÷ |EPS₁|', desc: 'Earnings growth. EPS slower than revenue means margins are compressing.', pills: [['green', '>20% strong'], ['amber', '10–20% solid'], ['red', '< revenue growth']] },
+        { name: 'Net Revenue Retention', abbr: 'NRR', formula: '(Start + Expansion − Churn) ÷ Start', desc: 'SaaS gold standard. >100% means existing customers grow spend even with zero new logos.', pills: [['green', '>120% exceptional'], ['amber', '100–120% healthy'], ['red', '<100% churning']] },
+        { name: 'LTV : CAC', abbr: 'LTV:CAC', formula: 'Lifetime value ÷ Acquisition cost', desc: 'Return on each $1 of sales & marketing. 3:1 is healthy; >5:1 may be under-investing.', pills: [['red', '<3:1 unprofitable'], ['green', '3–5:1 healthy'], ['blue', '>5:1 under-investing']] },
+    ]},
+    { id: 'health', label: 'Financial health', cards: [
+        { name: 'Debt-to-Equity', abbr: 'D/E', key: 'debtToEquity', unit: U.NUM, grade: G.de, formula: 'Total debt ÷ Equity', desc: 'Leverage. High debt magnifies both returns and losses — risky when rates are high.', pills: [['green', '<0.5 fortress'], ['amber', '0.5–2 manageable'], ['red', '>3 leveraged']] },
+        { name: 'Current ratio', abbr: 'CR', key: 'currentRatio', unit: U.NUM, grade: G.cr, formula: 'Current assets ÷ Current liabilities', desc: 'Can it pay the next 12 months of bills? Below 1 is a liquidity warning.', pills: [['red', '<1 stress'], ['amber', '1–1.5 adequate'], ['green', '>2 comfortable']] },
+        { name: 'Interest coverage', abbr: 'ICR', formula: 'EBIT ÷ Interest expense', desc: 'How many times profit covers the interest bill. Low ICR gets squeezed as rates rise.', pills: [['red', '<1.5 distress'], ['amber', '1.5–5 watch'], ['green', '>10 safe']] },
+        { name: 'Net cash position', abbr: 'Net $', key: 'netCash', unit: U.MONEY, grade: G.nc, formula: 'Total cash − Total debt', desc: 'Positive = fortress balance sheet (buybacks, dividends, M&A). Negative = net debt.', pills: [['green', 'positive = net cash'], ['red', 'negative = net debt']] },
+    ]},
+    { id: 'cashflow', label: 'Cash flow', cards: [
+        { name: 'Free Cash Flow', abbr: 'FCF', key: 'freeCashflow', unit: U.MONEY, formula: 'Operating cash flow − Capex', desc: 'Cash left after maintaining/growing assets. Hard to fake — many call it the most honest profit.', pills: [['green', 'positive & growing'], ['amber', 'positive but flat'], ['red', 'negative']] },
+        { name: 'FCF yield', abbr: 'FCF%', key: 'fcfYield', unit: U.PCT, grade: G.fy, formula: 'FCF per share ÷ Price', desc: 'Like a dividend yield of what the company could return. Compare to the ~4.5% 10-yr Treasury.', pills: [['green', '>5% attractive'], ['amber', '2–5% fair'], ['red', '<2% low']] },
+        { name: 'FCF margin', abbr: 'FCF%rev', key: 'fcfMargin', unit: U.PCT, grade: G.fm, formula: 'FCF ÷ Revenue', desc: 'Share of revenue that becomes free cash. The best software runs 30–40%.', pills: [['green', '>25% elite'], ['amber', '10–25% good'], ['red', '<10% heavy']] },
+        { name: 'Operating cash flow', abbr: 'OCF', key: 'operatingCashflow', unit: U.MONEY, formula: 'Net income + non-cash + ΔWC', desc: 'Cash from the core business. OCF consistently above net income = quality earnings.', pills: [['green', 'OCF > net income'], ['red', 'OCF < net income']] },
+    ]},
+];
+const GUIDE_GRADE_BY_KEY = {};
+GUIDE_TABS.forEach((t) => t.cards.forEach((c) => { if (c.key && c.grade) GUIDE_GRADE_BY_KEY[c.key] = c.grade; }));
+const GUIDE_CHEATSHEET = [
+    ['P/E', '15–25x', '>40x', 'Are you overpaying per $ of profit?'],
+    ['PEG', '0.8–2.0', '>2.5', 'Is the P/E justified by growth?'],
+    ['P/S', '2–10x', '>20x', 'Price per $ of revenue'],
+    ['P/B', '1–5x (tech 5–20x)', '>30x', 'Price vs. liquidation value'],
+    ['EV/EBITDA', '8–20x', '>35x', 'Debt-adjusted valuation'],
+    ['Gross margin', '70–85% sw', '<30%', 'Pricing power & unit economics'],
+    ['Op. margin', '>20%', 'negative', 'Efficiency after running costs'],
+    ['Net margin', '>15%', 'negative', 'Bottom-line profitability'],
+    ['ROE', '>20%', '<10%', 'Return on shareholder capital'],
+    ['ROA', '>10%', '<5%', 'Asset efficiency'],
+    ['Rev growth', '>20%', '<10%', 'Top-line momentum'],
+    ['EPS growth', '>20%', '< rev growth', 'Earnings leverage'],
+    ['NRR', '>110%', '<100%', 'Customer expansion vs. churn'],
+    ['D/E', '<1.0', '>3.0', 'Balance-sheet leverage'],
+    ['Current ratio', '>1.5', '<1.0', 'Can it pay near-term bills?'],
+    ['ICR', '>5x', '<2x', 'Can it service its debt?'],
+    ['FCF', 'positive & growing', 'persistently negative', 'Real cash generated'],
+    ['FCF yield', '>4%', '<2%', 'Cash return vs. price'],
+    ['FCF margin', '>20%', '<10%', 'Business-model quality'],
+];
+function buildGuideContent() {
+    const host = els.guideContent;
+    if (!host) return;
+    const tabsBtns = GUIDE_TABS.map((t, i) => `<button type="button" class="mgTab${i === 0 ? ' is-active' : ''}" data-mg="${t.id}">${escapeHtml(t.label)}</button>`).join('')
+        + `<button type="button" class="mgTab" data-mg="cheatsheet">Cheat sheet</button>`;
+    const panels = GUIDE_TABS.map((t, i) => {
+        const cards = t.cards.map((c) => `
+            <div class="mgCard">
+                <div class="mgCardHead"><span class="mgName">${escapeHtml(c.name)}</span><span class="mgAbbr">${escapeHtml(c.abbr)}${c.key ? `<span class="mgVal" data-mgkey="${c.key}" data-mgunit="${c.unit}"></span>` : ''}</span></div>
+                <div class="mgFormula">${escapeHtml(c.formula)}</div>
+                <div class="mgDesc">${escapeHtml(c.desc)}</div>
+                <div class="mgPills">${c.pills.map(([tone, txt]) => `<span class="pill pill-${tone}">${escapeHtml(txt)}</span>`).join('')}</div>
+            </div>`).join('');
+        const calc = GUIDE_CALCS[t.id] || '';
+        return `<div class="mgPanel${i === 0 ? ' is-active' : ''}" data-mg="${t.id}">${calc}${cards}</div>`;
+    }).join('');
+    const cheatRows = GUIDE_CHEATSHEET.map((r) => `<tr><td class="mgcMetric">${escapeHtml(r[0])}</td><td class="mgcGood">${escapeHtml(r[1])}</td><td class="mgcWarn">${escapeHtml(r[2])}</td><td>${escapeHtml(r[3])}</td></tr>`).join('');
+    const cheatPanel = `<div class="mgPanel" data-mg="cheatsheet">
+        <div class="mgCheatScroll"><table class="mgCheatTable"><thead><tr><th>Metric</th><th>Good range</th><th>Warning</th><th>What it measures</th></tr></thead><tbody>${cheatRows}</tbody></table></div>
+        <div class="mgNote">No single metric tells the whole story — read at least one from each category together.</div>
+    </div>`;
+    host.innerHTML = `<div class="mgTabs">${tabsBtns}</div><div class="mgPanels">${panels}${cheatPanel}</div>`;
+    host.querySelector('.mgTabs').addEventListener('click', (e) => {
+        const btn = e.target.closest('.mgTab'); if (!btn) return;
+        const id = btn.dataset.mg;
+        host.querySelectorAll('.mgTab').forEach((b) => b.classList.toggle('is-active', b === btn));
+        host.querySelectorAll('.mgPanel').forEach((p) => p.classList.toggle('is-active', p.dataset.mg === id));
+    });
+    wireGuideCalculators(host);
+}
+const GUIDE_CALCS = {
+    valuation: `<div class="mgCalc" data-calc="pe">
+        <div class="mgCalcHead">P/E calculator</div>
+        <label>Stock price <output data-out="p">$150</output></label><input type="range" data-in="p" min="10" max="600" value="150" step="1">
+        <label>Annual EPS <output data-out="e">$5.00</output></label><input type="range" data-in="e" min="0.5" max="40" value="5" step="0.5">
+        <div class="mgCalcResult" data-out="r">P/E = 30.0x — above average, needs a growth story</div>
+    </div>`,
+    growth: `<div class="mgCalc" data-calc="peg">
+        <div class="mgCalcHead">PEG calculator</div>
+        <label>P/E ratio <output data-out="pe">50x</output></label><input type="range" data-in="pe" min="5" max="100" value="50" step="1">
+        <label>EPS growth %/yr <output data-out="g">50%</output></label><input type="range" data-in="g" min="5" max="100" value="50" step="1">
+        <div class="mgCalcResult" data-out="r">PEG = 1.00 — fairly valued</div>
+    </div>`,
+    cashflow: `<div class="mgCalc" data-calc="fcf">
+        <div class="mgCalcHead">FCF yield calculator</div>
+        <label>FCF / share <output data-out="f">$8.00</output></label><input type="range" data-in="f" min="0.5" max="40" value="8" step="0.5">
+        <label>Stock price <output data-out="p">$200</output></label><input type="range" data-in="p" min="20" max="600" value="200" step="5">
+        <div class="mgCalcResult" data-out="r">FCF Yield = 4.0% — close to the 10-yr Treasury</div>
+    </div>`,
+};
+function wireGuideCalculators(host) {
+    const pe = host.querySelector('[data-calc="pe"]');
+    if (pe) {
+        const p = pe.querySelector('[data-in="p"]'), e = pe.querySelector('[data-in="e"]');
+        const upd = () => {
+            const P = +p.value, E = +e.value; const r = P / E;
+            pe.querySelector('[data-out="p"]').textContent = `$${P}`;
+            pe.querySelector('[data-out="e"]').textContent = `$${E.toFixed(2)}`;
+            const v = r < 15 ? 'cheap vs. history' : r < 25 ? 'fair / average' : r < 40 ? 'above average — needs a growth story' : 'priced for big growth — risky on a miss';
+            pe.querySelector('[data-out="r"]').textContent = `P/E = ${r.toFixed(1)}x — ${v}`;
+        };
+        p.oninput = upd; e.oninput = upd; upd();
+    }
+    const peg = host.querySelector('[data-calc="peg"]');
+    if (peg) {
+        const pe2 = peg.querySelector('[data-in="pe"]'), g = peg.querySelector('[data-in="g"]');
+        const upd = () => {
+            const PE = +pe2.value, GG = +g.value; const r = PE / GG;
+            peg.querySelector('[data-out="pe"]').textContent = `${PE}x`;
+            peg.querySelector('[data-out="g"]').textContent = `${GG}%`;
+            const v = r < 1 ? 'potentially undervalued' : r < 2 ? 'fairly valued' : 'expensive even for the growth';
+            peg.querySelector('[data-out="r"]').textContent = `PEG = ${r.toFixed(2)} — ${v}`;
+        };
+        pe2.oninput = upd; g.oninput = upd; upd();
+    }
+    const fcf = host.querySelector('[data-calc="fcf"]');
+    if (fcf) {
+        const f = fcf.querySelector('[data-in="f"]'), p = fcf.querySelector('[data-in="p"]');
+        const upd = () => {
+            const F = +f.value, P = +p.value; const y = F / P * 100;
+            fcf.querySelector('[data-out="f"]').textContent = `$${F.toFixed(2)}`;
+            fcf.querySelector('[data-out="p"]').textContent = `$${P}`;
+            const v = y > 5 ? 'attractive vs. bonds' : y > 2 ? 'fair — needs growth to justify' : 'low — heavy growth expectations';
+            fcf.querySelector('[data-out="r"]').textContent = `FCF Yield = ${y.toFixed(1)}% — ${v}`;
+        };
+        f.oninput = upd; p.oninput = upd; upd();
+    }
+}
+// Push a real value into a range slider, widening min/max if the value falls outside.
+function setGuideSlider(input, value) {
+    if (!input || value == null || !isFinite(value) || value <= 0) return false;
+    if (value > +input.max) input.max = String(Math.ceil(value));
+    if (value < +input.min) input.min = String(Math.floor(value));
+    input.value = String(value);
+    return true;
+}
+function applyGuideTickerData(data) {
+    const host = els.guideContent;
+    const m = data.metrics || {};
+    if (!host) return;
+    const pe = host.querySelector('[data-calc="pe"]');
+    if (pe) {
+        const p = pe.querySelector('[data-in="p"]'), e = pe.querySelector('[data-in="e"]');
+        const okP = setGuideSlider(p, m.price), okE = setGuideSlider(e, m.eps);
+        if (okP || okE) p.oninput();
+    }
+    const peg = host.querySelector('[data-calc="peg"]');
+    if (peg) {
+        const pe2 = peg.querySelector('[data-in="pe"]'), g = peg.querySelector('[data-in="g"]');
+        const okPe = setGuideSlider(pe2, m.peTrailing ?? m.peForward);
+        const okG = setGuideSlider(g, m.earningsGrowth ?? m.revenueGrowth);
+        if (okPe || okG) pe2.oninput();
+    }
+    const fcf = host.querySelector('[data-calc="fcf"]');
+    if (fcf) {
+        const f = fcf.querySelector('[data-in="f"]'), p = fcf.querySelector('[data-in="p"]');
+        const okP = setGuideSlider(p, m.price);
+        const fcfPerShare = (m.price > 0 && m.fcfYield != null) ? m.price * m.fcfYield / 100 : null;
+        const okF = setGuideSlider(f, fcfPerShare);
+        if (okP || okF) f.oninput();
+    }
+    host.querySelectorAll('.mgVal[data-mgkey]').forEach((el) => {
+        const key = el.dataset.mgkey;
+        const v = m[key];
+        el.className = 'mgVal';
+        if (v == null) { el.textContent = ''; return; }
+        el.textContent = ` (= ${fmtMetric(el.dataset.mgunit, v)})`;
+        const grade = GUIDE_GRADE_BY_KEY[key];
+        if (grade) el.classList.add(`tone-${grade(v).tone}`);
+    });
+}
+async function loadGuideTicker() {
+    const input = els.mgTickerInput, status = els.mgTickerStatus;
+    const ticker = (input?.value || '').trim().toUpperCase();
+    if (!ticker || !status) return;
+    status.textContent = 'Loading…';
+    status.classList.remove('is-ok', 'is-error');
+    try {
+        const data = await api(`/api/fundamentals/${encodeURIComponent(ticker)}`);
+        if (!data.available || !Object.keys(data.metrics || {}).length) {
+            status.textContent = `No data for ${ticker}${data.error ? ` (${data.error})` : ''}`;
+            status.classList.add('is-error');
+            return;
+        }
+        if (!GUIDE_BUILT) { buildGuideContent(); GUIDE_BUILT = true; }
+        applyGuideTickerData(data);
+        status.textContent = `Loaded ${data.name || ticker} (${ticker}) into the calculators & cards below`;
+        status.classList.add('is-ok');
+    } catch (e) {
+        status.textContent = `Error: ${e.message || e}`;
+        status.classList.add('is-error');
+    }
+}
+
 // --- events
-document.getElementById("cancelDlg").addEventListener("click", () => els.postDlg.close());
-document.getElementById("saveDlg").addEventListener("click", savePost);
-document.getElementById("dClose").addEventListener("click", () => els.detailDlg.close());
+els.cancelDlg?.addEventListener("click", () => els.postDlg.close());
+els.cancelDlgX?.addEventListener("click", () => els.postDlg.close());
+els.saveDlg?.addEventListener("click", savePost);
+els.dClose?.addEventListener("click", () => els.detailDlg.close());
 els.postDlg.addEventListener('close', () => { els.saveDlg.disabled = false; });
-// Stop any active stream when dialog closes
+// Stop any active stream when the detail dialog closes
 els.detailDlg.addEventListener('close', () => {
     if (currentDetailId) stopAnalysisStream(currentDetailId);
     stopDetailAutoRefresh();
     teardownActiveChartInteractions();
     currentDetailId = null;
-    // Clean up global function reference
     window.currentDetailRefreshAnalyzeButton = null;
 });
-els.heroRunBtn?.addEventListener('click', queueAllWatchlists);
-els.heroDismissBtn?.addEventListener('click', () => {
-    setHeroDismissed(true);
-    showToast('Intro hidden. Use "Show Intro" if you want it back.');
-});
-els.heroToggleBtn?.addEventListener('click', () => {
-    setHeroDismissed(false);
-    els.heroSection?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-});
-els.resetOrderBtn?.addEventListener('click', () => {
-    HAS_CUSTOM_ORDER = false;
-    try { localStorage.removeItem('feed:customOrder'); } catch {}
-    POSTS = POSTS.slice().sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''));
-    renderFeed();
-    showToast('Order reset');
-});
-els.searchBox.addEventListener("input", renderFeed);
-els.heroAddBtn?.addEventListener('click', openNew);
-document.querySelectorAll('input[name="analysisPreset"]').forEach((input) => {
-    input.addEventListener('change', () => setPresetOnForm(input.value, true));
+
+// Hamburger side drawer
+function openDrawer() {
+    els.sideDrawer?.classList.add('is-open');
+    els.drawerOverlay?.classList.add('is-open');
+    els.sideDrawer?.setAttribute('aria-hidden', 'false');
+}
+function closeDrawer() {
+    els.sideDrawer?.classList.remove('is-open');
+    els.drawerOverlay?.classList.remove('is-open');
+    els.sideDrawer?.setAttribute('aria-hidden', 'true');
+}
+els.menuBtn?.addEventListener('click', openDrawer);
+els.drawerClose?.addEventListener('click', closeDrawer);
+els.drawerOverlay?.addEventListener('click', closeDrawer);
+// Close drawer when any action inside it is triggered
+els.sideDrawer?.querySelectorAll('button:not(#drawerClose)').forEach((b) => b.addEventListener('click', closeDrawer));
+
+// Add-holding triggers (header + holdings panel + empty states)
+document.querySelectorAll('.addHoldingTrigger').forEach((b) => b.addEventListener('click', () => openNew()));
+els.refreshPricesBtn?.addEventListener('click', refreshAllSnapshots);
+els.guideBtn?.addEventListener('click', () => openGuide());
+els.guideClose?.addEventListener('click', () => els.guideDlg.close());
+els.mgLoadBtn?.addEventListener('click', loadGuideTicker);
+els.mgTickerInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadGuideTicker(); });
+els.searchBox?.addEventListener("input", renderHoldingsList);
+
+// Transaction dialog
+els.txnSave?.addEventListener('click', saveTxn);
+els.txnCancel?.addEventListener('click', () => els.txnDlg.close());
+els.txnClose?.addEventListener('click', () => els.txnDlg.close());
+els.txnDlg?.addEventListener('close', () => { els.txnSave.disabled = false; });
+[els.txnShares, els.txnPrice, els.txnFee].forEach((inp) => inp?.addEventListener('input', updateTxnPreview));
+els.txnDlg?.querySelectorAll('input[name="txnType"]').forEach((r) => r.addEventListener('change', updateTxnPreview));
+
+// Account dialog
+els.accSave?.addEventListener('click', saveAccount);
+els.accCancel?.addEventListener('click', () => els.accountDlg.close());
+els.accClose?.addEventListener('click', () => els.accountDlg.close());
+els.accDelete?.addEventListener('click', deleteAccount);
+els.accountDlg?.addEventListener('close', () => { els.accSave.disabled = false; });
+
+// Cash dialog (adjust cash / deposit to cover a buy)
+els.cashSave?.addEventListener('click', saveCash);
+els.cashCancel?.addEventListener('click', () => els.cashDlg.close());
+els.cashClose?.addEventListener('click', () => els.cashDlg.close());
+els.cashAmount?.addEventListener('input', updateCashHint);
+els.cashDlg?.querySelectorAll('input[name="cashType"]').forEach((r) => r.addEventListener('change', updateCashHint));
+els.cashDlg?.addEventListener('close', () => { els.cashSave.disabled = false; });
+
+// Redraw canvases on resize so their bitmaps re-fit instead of stretching.
+let __resizeRAF = 0;
+function redrawVisibleCharts() {
+    const nw = document.getElementById('networthCanvas');
+    if (nw && LAST_NW_SERIES) drawNetworthChart(nw, LAST_NW_SERIES);
+    const acc = getActiveAccount();
+    const ac = document.getElementById('accountChartCanvas');
+    if (ac && acc) drawAccountPnlChart(ac, POSTS.filter((p) => String(p.accountId) === String(acc.id)));
+    if (currentDetailId) {
+        const tradePanel = els.dContent?.querySelector('.detailPanel[data-tab="trades"]');
+        if (tradePanel && !tradePanel.hidden) redrawTradeChart(currentDetailId);
+    }
+}
+window.addEventListener('resize', () => {
+    if (__resizeRAF) cancelAnimationFrame(__resizeRAF);
+    __resizeRAF = requestAnimationFrame(redrawVisibleCharts);
 });
 
 // --- boot
 (async function init() {
-    applyHeroVisibility();
-    syncWatchlistPanelActions();
-    bindFabDock();
     try { await loadConfig(); } catch { /* non-fatal */ }
-    setFormFromOptions(APP_CONFIG.defaultOptions || {});
-    els.pDate.value = els.pDate.value || todayLocalDate();
     try {
+        await loadAccounts();
         await loadPosts();
     } catch (e) {
-        console.error("Failed to load posts:", e);
-        els.feed.innerHTML = `<div class="empty-state">
-          <div class="muted">Failed to load posts. Ensure the server is running and try again.</div>
+        console.error("Failed to load portfolio:", e);
+        if (els.holdingsList) els.holdingsList.innerHTML = `<div class="empty-state">
+          <div class="muted">Failed to load. Ensure the server is running and try again.</div>
         </div>`;
     }
     // Queue SSE stream (terminal events) + debounced refresh logic to replace frequent polling
@@ -2589,7 +4404,7 @@ document.querySelectorAll('input[name="analysisPreset"]').forEach((input) => {
             // One-shot fetch of full status + targeted detail refresh
             try {
                 await loadQueueStatus();
-                renderFeed();
+                renderAll();
                 if (currentDetailId) {
                     try {
                         const p = await api(`/api/stocks/${encodeURIComponent(currentDetailId)}`);
@@ -2645,46 +4460,6 @@ document.querySelectorAll('input[name="analysisPreset"]').forEach((input) => {
         // Expose for debugging
         window.__queueStream = () => es;
     })();
-    // One-time global touch DnD handlers
-    if (!window.__touchDndWired) {
-        window.__touchDndWired = true;
-        window.addEventListener('touchmove', (e) => {
-            if (!TOUCH_DND.active || !TOUCH_DND.row || !TOUCH_DND.tbody) return;
-            e.preventDefault();
-            const t = e.touches[0];
-            const tbody = TOUCH_DND.tbody; const row = TOUCH_DND.row;
-            const rows = Array.from(tbody.querySelectorAll('tr'));
-            const target = rows.find(r => {
-                const rect = r.getBoundingClientRect();
-                return t.clientY >= rect.top && t.clientY <= rect.bottom;
-            });
-            if (!target || target === row) return;
-            const rect = target.getBoundingClientRect();
-            const before = (t.clientY - rect.top) < rect.height / 2;
-            if (before) tbody.insertBefore(row, target); else tbody.insertBefore(row, target.nextSibling);
-        }, { passive: false });
-        window.addEventListener('touchend', async () => {
-            if (!TOUCH_DND.active || !TOUCH_DND.tbody) return;
-            const tbody = TOUCH_DND.tbody; const row = TOUCH_DND.row;
-            TOUCH_DND.active = false; TOUCH_DND.row = null; TOUCH_DND.tbody = null;
-            window.__touchDndJustEnded = Date.now();
-            if (row) row.classList.remove('dragging');
-            tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drop-before','drop-after'));
-            // Persist new order
-            const newOrder = Array.from(tbody.querySelectorAll('tr')).map(r => r.getAttribute('data-id')).filter(Boolean);
-            try {
-                await api('/api/stocks/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: newOrder }) });
-                HAS_CUSTOM_ORDER = true;
-                try { localStorage.setItem('feed:customOrder', '1'); } catch {}
-                syncWatchlistPanelActions();
-                const byId = new Map(POSTS.map(x => [x.id, x]));
-                POSTS = newOrder.map(id => byId.get(id)).filter(Boolean).concat(POSTS.filter(x => !newOrder.includes(x.id)));
-                showToast('Order saved');
-            } catch (err) {
-                console.warn('Failed to save order', err);
-            }
-        });
-    }
 })();
 
 // --- tiny HTML escape
