@@ -2,7 +2,8 @@ from .embedding_providers import (
     EmbeddingProvider,
     OpenAIEmbeddingProvider,
     GeminiEmbeddingProvider,
-    OllamaEmbeddingProvider
+    OllamaEmbeddingProvider,
+    LocalEmbeddingProvider,
 )
 
 
@@ -12,8 +13,10 @@ class EmbeddingProviderFactory:
         backend_url = config["backend_url"]
 
         if  "deepseek" in backend_url: # Deepseek does not currently have its own embedding model, Lets just use backup for now
-            model = config[config["default_backup"]]["quick_think_llm"]
-            backend_url = config[config["default_backup"]]["backend_url"]
+            backup = config["default_backup"]
+            if backup == "backup_local":
+                return LocalEmbeddingProvider()
+            backend_url = config[backup]["backend_url"]
 
         if "generativelanguage.googleapis.com" in backend_url:
             return GeminiEmbeddingProvider(backend_url)

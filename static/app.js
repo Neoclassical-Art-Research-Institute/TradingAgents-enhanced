@@ -64,6 +64,7 @@ const els = {
     holdingsList: document.getElementById("holdingsList"),
     holdingsTitle: document.getElementById("holdingsTitle"),
     holdingsMeta: document.getElementById("holdingsMeta"),
+    addHoldingBtn: document.getElementById("addHoldingBtn"),
     refreshPricesBtn: document.getElementById("refreshPricesBtn"),
     serverState: document.getElementById("serverState"),
     // add / edit holding
@@ -214,6 +215,14 @@ function fmtCompactMoney(x) {
     if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`;
     return `${sign}$${abs.toFixed(2)}`;
 }
+// Compact + signed (e.g. "+$3.6K"): used for the return-mode chart axis, where
+// fmtSignedMoney's full-precision "+$3,641.98" form is too wide for the y-axis gutter.
+function fmtSignedCompactMoney(x) {
+    if (x == null || isNaN(x)) return '';
+    const n = Number(x);
+    const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
+    return `${sign}${fmtCompactMoney(Math.abs(n))}`;
+}
 const pnlClass = (x) => (x == null || isNaN(x) || x === 0) ? 'flat' : (x > 0 ? 'pos' : 'neg');
 
 // --- account helpers
@@ -279,6 +288,9 @@ function lockControlHtml(acc) {
     return `<button class="ghost iconBtn lockBtn ${locked ? 'is-locked' : 'is-unlocked'}" id="lockToggleBtn" type="button" aria-label="${locked ? 'Locked' : 'Editing'}" title="${locked ? 'Locked — click to enter keyword' : 'Editing — click to lock'}">${locked ? '🔒' : '🔓'} <span class="btnTxt">${locked ? 'Locked' : 'Editing'}</span></button>`;
 }
 
+// Which P&L window the holdings list's hSecondary line shows: 'day' or 'total' return.
+let HOLD_SEC_MODE = (function () { try { return localStorage.getItem('stock:holdSecMode') || 'day'; } catch { return 'day'; } })();
+
 function holdingsForAccount(accountId, query = '') {
     const q = (query || '').toLowerCase().trim();
     return POSTS.filter((p) => {
@@ -286,7 +298,14 @@ function holdingsForAccount(accountId, query = '') {
         if (!q) return true;
         const hay = [p.title || '', p.note || p.description || '', ...(p.tickers || [])].join(' ').toLowerCase();
         return hay.includes(q);
-    });
+    }).sort((a, b) => holdingSortValue(b) - holdingSortValue(a));
+}
+
+// Current dollar value of a holding, used to sort the holdings list (highest first).
+function holdingSortValue(p) {
+    const pos = holdingPosition(p);
+    if (pos.marketValue != null) return pos.marketValue;
+    return pos.current ?? -Infinity;
 }
 
 function holdingTicker(p) {
@@ -311,6 +330,8 @@ function holdingPosition(p) {
             unrealizedPnl: snap.unrealizedPnl ?? null,
             realizedPnl: snap.realizedPnl ?? 0,
             pct: snap.pct ?? null,
+            dayChange: snap.dayChange ?? null,
+            dayChangePct: snap.dayChangePct ?? null,
         };
     }
     return computePosition(p.transactions || [], snap.current ?? null);
@@ -968,7 +989,7 @@ function renderNetworthPanel() {
            <div class="nwSub"><span class="${pnlClass(nw.returnAbs)}">${nw.returnPct != null ? fmtSignedPct(nw.returnPct) : '—'}</span><span class="muted">total return on ${fmtCompactMoney(nw.contributions)} invested</span></div>`
         : `<div class="nwValue">${fmtCompactMoney(nw.netWorth)}</div>
            <div class="nwSub"><span class="${pnlClass(nw.returnAbs)}">${fmtSignedMoney(nw.returnAbs)}${nw.returnPct != null ? ` (${fmtSignedPct(nw.returnPct)})` : ''}</span><span class="muted">total return</span></div>`;
-    const ranges = [['1d', '1D'], ['5d', '1W'], ['1mo', '1M'], ['3mo', '3M'], ['6mo', '6M'], ['1y', '1Y'], ['2y', '2Y'], ['all', 'ALL']];
+    const ranges = Object.entries(NW_RANGE_LABELS);
     // Disable a fixed range when more than ~90% of it would be empty "no data" filler, i.e.
     // when the account has less than 10% of that range in actual history. 'all' is always
     // available once there's any activity. With no activity at all, leave every range usable.
@@ -1009,6 +1030,7 @@ function renderNetworthPanel() {
           <label class="segmentOption"><input type="radio" name="nwMode" value="return" ${NW_MODE === 'return' ? 'checked' : ''} /><span>Return</span></label>
         </div>
       </div>
+      <div class="nwPeriodReturn muted" id="nwPeriodReturn"></div>
       <div class="nwChartWrap"><canvas id="networthCanvas"></canvas></div>
       <div class="nwChartNote muted">${NW_MODE === 'return'
         ? 'Return = net worth − net deposits, so adding cash never shows as a gain.'
@@ -1285,6 +1307,7 @@ const NW_CHART_PAD = { l: 60, r: 16, t: 16, b: 28 };
 
 // Calendar-day span of each fixed range. '5d' is labelled "1W"; 'all' is dynamic.
 const NW_RANGE_DAYS = { '1d': 1, '5d': 5, '1mo': 30, '3mo': 91, '6mo': 182, '1y': 365, '2y': 730 };
+const NW_RANGE_LABELS = { '1d': '1D', '5d': '1W', '1mo': '1M', '3mo': '3M', '6mo': '6M', '1y': '1Y', '2y': '2Y', all: 'ALL' };
 
 // Explicit interval per fixed range, calibrated to ~8 trading hours/day (not 24h) so the tick
 // granularity matches how much data actually exists in a session. yfinance has no 10m bar, so
@@ -1413,11 +1436,11 @@ async function loadNetworthChart(acc, holdings, period) {
     const fetchPeriod = cfg.fetch;
     const key = `${acc.id}|${period}|${interval}|${cfg.days}`;
     NW_HOVER_IDX = null;
-    if (NETWORTH_CACHE[key]) { LAST_NW_SERIES = NETWORTH_CACHE[key]; drawNetworthChart(canvas, LAST_NW_SERIES); }
-    else { drawNetworthChart(canvas, null); }
+    if (NETWORTH_CACHE[key]) { LAST_NW_SERIES = NETWORTH_CACHE[key]; drawNetworthChart(canvas, LAST_NW_SERIES); updatePeriodReturnLabel(period, LAST_NW_SERIES); }
+    else { drawNetworthChart(canvas, null); updatePeriodReturnLabel(period, null); }
     if (!withTx.length) {
         const flat = { points: [], contributions: ledger.contributions, netNow: ledger.cash, hasData: false };
-        NETWORTH_CACHE[key] = flat; LAST_NW_SERIES = flat; drawNetworthChart(canvas, flat);
+        NETWORTH_CACHE[key] = flat; LAST_NW_SERIES = flat; drawNetworthChart(canvas, flat); updatePeriodReturnLabel(period, flat);
         return;
     }
     try {
@@ -1438,9 +1461,18 @@ async function loadNetworthChart(acc, holdings, period) {
             const clipped = series.points.filter((p) => p.date >= clipFrom);
             if (clipped.length > 1) series = { ...series, points: clipped };
         }
-        NETWORTH_CACHE[key] = series; LAST_NW_SERIES = series;
+        // Cache under `key` unconditionally (useful for other future range switches), but only
+        // promote to LAST_NW_SERIES / redraw if this response still matches what's on screen.
+        // Without this guard, a slower request for a range the user has since clicked away from
+        // can resolve later and silently clobber LAST_NW_SERIES — its own draw call is skipped,
+        // but the next hover reads the stale series and redraws the wrong range over the chart.
+        NETWORTH_CACHE[key] = series;
         const cv = document.getElementById('networthCanvas');
-        if (cv && getActiveAccount()?.id === acc.id && NW_PERIOD === period) drawNetworthChart(cv, series);
+        if (cv && getActiveAccount()?.id === acc.id && NW_PERIOD === period) {
+            LAST_NW_SERIES = series;
+            drawNetworthChart(cv, series);
+            updatePeriodReturnLabel(period, series);
+        }
     } catch (e) { console.warn('net worth build failed', e); }
 }
 
@@ -1534,6 +1566,32 @@ function computeNetworthSeries(entries, cashFlows, interval = '1d') {
     return { points, contributions, netNow: points.length ? points[points.length - 1].value : 0, hasData: true };
 }
 
+// Return over just the selected window, as opposed to the account's whole-life total
+// return: last point's (value − contributions) minus the window's starting value. A window
+// that starts before the account existed naturally collapses to the total return, since
+// computeNetworthSeries seeds the noData prefix to the first real point's value/contributions.
+function periodReturnFromSeries(series) {
+    const pts = series?.points || [];
+    if (!series?.hasData || pts.length < 2) return null;
+    const first = pts[0], last = pts[pts.length - 1];
+    const abs = (last.value - last.contributions) - (first.value - first.contributions);
+    const pct = first.contributions > 0 ? (abs / first.contributions) * 100 : null;
+    return { abs, pct };
+}
+
+// 'all' already IS the whole-life window, so its period return would just repeat the
+// headline's total return — skip the label there to avoid showing the same number twice.
+function updatePeriodReturnLabel(period, series) {
+    const el = document.getElementById('nwPeriodReturn');
+    if (!el) return;
+    if (period === 'all') { el.textContent = ''; return; }
+    const r = periodReturnFromSeries(series);
+    if (!r) { el.textContent = series === null ? 'Loading…' : ''; el.className = 'nwPeriodReturn muted'; return; }
+    const label = NW_RANGE_LABELS[period] || period;
+    el.innerHTML = `${label} return: <span class="${pnlClass(r.abs)}">${fmtSignedMoney(r.abs)}${r.pct != null ? ` (${fmtSignedPct(r.pct)})` : ''}</span>`;
+    el.className = 'nwPeriodReturn';
+}
+
 function hexA(hex, a) {
     const m = String(hex).trim().match(/^#?([0-9a-f]{6})$/i);
     if (!m) return hex;
@@ -1581,12 +1639,18 @@ function drawNetworthChart(canvas, series) {
     if (!returnMode) mn = Math.max(0, mn);
     const X = (i) => padL + plotW * (i / Math.max(1, pts.length - 1));
     const Y = (v) => padT + plotH * (1 - (v - mn) / (mx - mn || 1));
-    const col = lineVals[lineVals.length - 1] >= lineVals[0] ? buy : sell;
+    // In return mode, color reflects whether the total return is currently positive or
+    // negative (matches the headline's pnlClass), not the in-window trend — otherwise a
+    // positive return that dipped within the selected window paints red while the headline
+    // above it still reads "+3.21%", which looks contradictory.
+    const col = returnMode
+        ? (lineVals[lineVals.length - 1] >= 0 ? buy : sell)
+        : (lineVals[lineVals.length - 1] >= lineVals[0] ? buy : sell);
     // gridlines + y labels
     ctx.fillStyle = muted; ctx.strokeStyle = border;
     [mx, (mx + mn) / 2, mn].forEach((v) => {
         ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(padL + plotW, Y(v)); ctx.stroke(); ctx.globalAlpha = 1;
-        ctx.textAlign = 'right'; ctx.fillText(returnMode ? fmtSignedMoney(v) : fmtCompactMoney(v), padL - 8, Y(v));
+        ctx.textAlign = 'right'; ctx.fillText(returnMode ? fmtSignedCompactMoney(v) : fmtCompactMoney(v), padL - 8, Y(v));
     });
     if (returnMode && mn < 0 && mx > 0) { // emphasize the zero line
         ctx.strokeStyle = muted; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(padL, Y(0)); ctx.lineTo(padL + plotW, Y(0)); ctx.stroke(); ctx.globalAlpha = 1;
@@ -1713,9 +1777,10 @@ function buildHoldingRow(post, isWatch) {
     } else if (pos.shares > 0) {
         sub = `${fmtShares(pos.shares)} sh · avg ${pos.avgCost != null ? fmtMoney(pos.avgCost) : '—'}`;
         primary = pos.marketValue != null ? fmtCompactMoney(pos.marketValue) : '—';
-        const pnlAbs = pos.unrealizedPnl;
+        const pnlAbs = HOLD_SEC_MODE === 'day' ? pos.dayChange : pos.unrealizedPnl;
+        const pnlPct = HOLD_SEC_MODE === 'day' ? pos.dayChangePct : pos.pct;
         secondary = pnlAbs != null
-            ? `<span class="${pnlClass(pnlAbs)}">${fmtSignedMoney(pnlAbs)}${pos.pct != null ? ` · ${fmtSignedPct(pos.pct)}` : ''}</span>`
+            ? `<span class="${pnlClass(pnlAbs)}">${fmtSignedMoney(pnlAbs)}${pnlPct != null ? ` · ${fmtSignedPct(pnlPct)}` : ''}</span>`
             : '';
     } else {
         sub = post.title && post.title !== ticker ? post.title : 'no position';
@@ -4334,6 +4399,19 @@ els.sideDrawer?.querySelectorAll('button:not(#drawerClose)').forEach((b) => b.ad
 // Add-holding triggers (header + holdings panel + empty states)
 document.querySelectorAll('.addHoldingTrigger').forEach((b) => b.addEventListener('click', () => openNew()));
 els.refreshPricesBtn?.addEventListener('click', refreshAllSnapshots);
+els.addHoldingBtn?.addEventListener('click', () => openNew());
+
+// Holdings list hSecondary mode toggle (Day vs Total return)
+const holdSecToggle = document.getElementById('holdingsSecToggle');
+holdSecToggle?.querySelectorAll('input[name="holdSecMode"]').forEach((input) => {
+    input.checked = input.value === HOLD_SEC_MODE;
+    input.addEventListener('change', (e) => {
+        if (!e.target.checked) return;
+        HOLD_SEC_MODE = e.target.value === 'total' ? 'total' : 'day';
+        try { localStorage.setItem('stock:holdSecMode', HOLD_SEC_MODE); } catch {}
+        renderHoldingsList();
+    });
+});
 els.guideBtn?.addEventListener('click', () => openGuide());
 els.guideClose?.addEventListener('click', () => els.guideDlg.close());
 els.mgLoadBtn?.addEventListener('click', loadGuideTicker);

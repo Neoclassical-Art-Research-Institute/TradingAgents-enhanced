@@ -89,7 +89,12 @@
                                 <input id="searchBox" type="text" placeholder="Search holdings" />
                             </div>
                             <button id="refreshPricesBtn" class="ghost iconBtn" type="button" title="Refresh prices" aria-label="Refresh prices">⟳</button>
+                            <button id="addHoldingBtn" class="ghost iconBtn" type="button" title="Add holding" aria-label="Add holding">+</button>
                         </div>
+                    </div>
+                    <div class="holdingsSecToggle segmentToggle" id="holdingsSecToggle" role="group" aria-label="Holdings change view">
+                        <label class="segmentOption"><input type="radio" name="holdSecMode" value="day" /><span>Day</span></label>
+                        <label class="segmentOption"><input type="radio" name="holdSecMode" value="total" /><span>Total</span></label>
                     </div>
                     <div id="holdingsList" class="holdingsList"></div>
                 </section>

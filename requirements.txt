@@ -26,4 +26,5 @@ langchain_anthropic
 langchain-google-genai
 google-genai
 langchain-deepseek
-deepseek
+tavily-python
+deepseekflask>=3.0.0

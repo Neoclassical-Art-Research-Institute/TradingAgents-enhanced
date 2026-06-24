@@ -8,5 +8,6 @@ eval_data/
 *.egg-info/
 results/
 .env
+/nano
 
 data/

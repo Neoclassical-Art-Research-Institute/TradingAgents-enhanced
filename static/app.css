@@ -1973,6 +1973,7 @@ pre.log {
 .nwChartWrap { flex: 1 1 auto; min-height: 220px; position: relative; }
 .nwChartWrap canvas { width: 100%; height: 100%; display: block; }
 .nwChartNote { font-size: 12px; }
+.nwPeriodReturn { font-size: 13px; font-weight: 600; text-align: right; min-height: 18px; }
 .watchBig { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 8px 0; }
 .watchBigTile { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-strong); padding: 18px 12px; text-align: center; display: grid; gap: 4px; }
 .watchBigTile span { font-size: 34px; font-weight: 700; font-family: "Space Grotesk", sans-serif; }
@@ -2067,11 +2068,15 @@ pre.log {
 }
 .holdingsHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; position: sticky; top: -2px; background: var(--surface); z-index: 1; padding-top: 2px; }
 .holdingsHeadMain { min-width: 0; }
-.holdingsHead h2 { font-size: 18px; letter-spacing: -0.02em; }
+.holdingsHead h2 { font-size: 18px; letter-spacing: -0.02em; margin: 0.2em 0 0; }
 .holdingsActions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; flex-wrap: wrap; }
 .holdingsSearch { width: clamp(120px, 40vw, 200px); }
-.holdingsSearch input { padding: 8px 12px; }
+.holdingsSearch input { padding: 8px 12px; min-height: 36px; }
 .iconBtn { padding: 8px 11px; line-height: 1; font-size: 15px; }
+.holdingsSecToggle { margin: 6px 0 10px; }
+.holdingsSecToggle.segmentToggle { display: flex; }
+.holdingsSecToggle .segmentOption { flex: 1 1 0; }
+.holdingsSecToggle .segmentOption span { display: block; text-align: center; padding: 4px 0; font-size: 11px; font-weight: 600; }
 
 /* Compact holding rows (fit the narrow side panel; no horizontal overflow) */
 .holdingTable { display: flex; flex-direction: column; }

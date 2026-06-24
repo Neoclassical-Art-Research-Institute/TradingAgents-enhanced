@@ -464,13 +464,15 @@ def _position_from_transactions(txns: Any) -> Dict[str, Any]:
         "fees": round(fees, 4),
     }
 
-def _snapshot_entry(position: Dict[str, Any], current: float | None) -> Dict[str, Any]:
+def _snapshot_entry(position: Dict[str, Any], current: float | None, prev_close: float | None = None) -> Dict[str, Any]:
     """Build a per-ticker snapshot entry from a derived position + latest price."""
     shares = (position or {}).get("shares") or 0.0
     avg = (position or {}).get("avgCost")
     pct = percent_change(avg, current) if (avg and current is not None) else None
     market_value = (shares * current) if (current is not None and shares) else None
     unrealized = ((current - avg) * shares) if (current is not None and avg and shares) else None
+    day_pct = percent_change(prev_close, current) if (prev_close and current is not None) else None
+    day_change = ((current - prev_close) * shares) if (current is not None and prev_close is not None and shares) else None
     return {
         "current": current,
         "pct": pct,
@@ -479,6 +481,8 @@ def _snapshot_entry(position: Dict[str, Any], current: float | None) -> Dict[str
         "marketValue": round(market_value, 4) if market_value is not None else None,
         "unrealizedPnl": round(unrealized, 4) if unrealized is not None else None,
         "realizedPnl": (position or {}).get("realizedPnl") or 0.0,
+        "dayChange": round(day_change, 4) if day_change is not None else None,
+        "dayChangePct": round(day_pct, 4) if day_pct is not None else None,
     }
 
 def _build_holding_snapshot(holding: Dict[str, Any]) -> Dict[str, Any]:
@@ -489,8 +493,8 @@ def _build_holding_snapshot(holding: Dict[str, Any]) -> Dict[str, Any]:
     for t in tickers:
         if not t:
             continue
-        cur = get_latest_price(t)
-        snapshot[t] = _snapshot_entry(pos, cur)
+        cur, prev_close = get_price_and_prev_close(t)
+        snapshot[t] = _snapshot_entry(pos, cur, prev_close)
     return snapshot
 
 def _sanitize_date(raw: Any) -> str | None:
@@ -903,20 +907,35 @@ def run_tradingagents_analysis(tickers: List[str], options: Dict[str, Any]) -> D
 # yfinance helpers
 # -------------------
 def get_latest_price(ticker: str) -> float | None:
+    return get_price_and_prev_close(ticker)[0]
+
+def get_price_and_prev_close(ticker: str) -> tuple[float | None, float | None]:
+    """Latest price plus the prior trading day's close (for day-change deltas).
+
+    The daily bars (period=5d) always end on today regardless of whether the
+    market is open, so closes[-2] is reliably "yesterday's close" in both cases.
+    """
     if yf is None:
-        return None
+        return None, None
     try:
         info = yf.Ticker(ticker)
+        daily = info.history(period="5d", interval="1d")
+        prev_close = None
+        daily_last = None
+        if daily is not None and not daily.empty:
+            closes = daily["Close"].dropna()
+            if len(closes) >= 2:
+                prev_close = float(closes.iloc[-2])
+            if len(closes):
+                daily_last = float(closes.iloc[-1])
         px = info.history(period="1d", interval="1m")
         if px is not None and not px.empty:
-            return float(px["Close"].iloc[-1])
-        # fallback to last close
-        px2 = info.history(period="5d", interval="1d")
-        if px2 is not None and not px2.empty:
-            return float(px2["Close"].iloc[-1])
+            return float(px["Close"].iloc[-1]), prev_close
+        if daily_last is not None:
+            return daily_last, prev_close
     except Exception:
         pass
-    return None
+    return None, None
 
 def get_chart_data(ticker: str, period="6mo", interval="1d") -> Dict[str, Any]:
     empty = {"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
@@ -1248,10 +1267,10 @@ def perform_analysis(pid: str) -> None:
                     pp["analysis"]["updatedAt"] = _utcnow_iso()
                 _update_post(pid, upd)
                 # Snapshot (position/P&L derived from this holding's transactions)
-                cur = get_latest_price(t)
+                cur, prev_close = get_price_and_prev_close(t)
                 def upd_snap(pp):
                     pos = _position_from_transactions(pp.get("transactions") or [])
-                    pp.setdefault("snapshot", {})[t] = _snapshot_entry(pos, cur)
+                    pp.setdefault("snapshot", {})[t] = _snapshot_entry(pos, cur, prev_close)
                     pp["updatedAt"] = _utcnow_iso()
                 _update_post(pid, upd_snap)
                 _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=total_tickers)
@@ -2113,11 +2132,11 @@ def analyze_post_stream(pid):
                     _update_post(pid, upd)
 
                     # Update snapshot for this ticker (position/P&L from transactions)
-                    cur = get_latest_price(t)
+                    cur, prev_close = get_price_and_prev_close(t)
 
                     def upd_snap(pp):
                         pos = _position_from_transactions(pp.get("transactions") or [])
-                        pp.setdefault("snapshot", {})[t] = _snapshot_entry(pos, cur)
+                        pp.setdefault("snapshot", {})[t] = _snapshot_entry(pos, cur, prev_close)
                         pp["updatedAt"] = _utcnow_iso()
                     _update_post(pid, upd_snap)
                     _set_analysis_progress(pid, state='running', current_ticker=t, completed=index + 1, total=len(tickers))
@@ -2190,18 +2209,32 @@ def analyze_all():
             _set_state(pid, 'queued')
     return jsonify(_get_job_states())
 
+_CHART_CACHE: Dict[Any, Any] = {}  # (ticker, period, interval) -> (timestamp, payload)
+_CHART_TTL = 60.0  # seconds; the net-worth chart re-fetches every holding on each range click
+
 @app.get("/api/chart")
 def chart():
     """
     Returns OHLCV series suitable for line or candlestick charts.
     Params: ticker, period=6mo, interval=1d
+    Cached briefly (see _CHART_TTL) since the net-worth chart fans out one request per
+    holding on every range switch — without a cache that's N live yfinance round-trips
+    on every click, which is the main source of the visible "freeze" when changing ranges.
     """
     ticker = (request.args.get("ticker") or "").upper().strip()
     if not ticker:
         return jsonify({"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []})
     period = request.args.get("period") or "6mo"
     interval = request.args.get("interval") or "1d"
-    return jsonify(get_chart_data(ticker, period, interval))
+    key = (ticker, period, interval)
+    now = time.time()
+    cached = _CHART_CACHE.get(key)
+    if cached and (now - cached[0] < _CHART_TTL):
+        return jsonify(cached[1])
+    data = get_chart_data(ticker, period, interval)
+    if data.get("timestamps"):
+        _CHART_CACHE[key] = (now, data)
+    return jsonify(data)
 
 @app.get("/api/fundamentals/<ticker>")
 def fundamentals(ticker):

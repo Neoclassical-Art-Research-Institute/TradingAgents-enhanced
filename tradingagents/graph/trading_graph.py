@@ -10,6 +10,41 @@ from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_deepseek import ChatDeepSeek
+from langchain_core.language_models import LanguageModelInput
+
+
+class ChatDeepSeekFixed(ChatDeepSeek):
+    """Patched ChatDeepSeek that re-injects reasoning_content into the API payload.
+
+    DeepSeek thinking models (e.g. deepseek-v4-flash) return reasoning_content in
+    responses. In multi-turn conversations, the DeepSeek API requires that field to
+    be passed back verbatim in the assistant message. LangChain's base OpenAI message
+    converter silently drops it, causing:
+        'The reasoning_content in the thinking mode must be passed back to the API.'
+    """
+
+    def _get_request_payload(
+        self,
+        input_: LanguageModelInput,
+        *,
+        stop=None,
+        **kwargs,
+    ) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        try:
+            original_messages = self._convert_input(input_).to_messages()
+            payload_msgs = payload["messages"]
+            # Walk both lists in lock-step and re-inject reasoning_content
+            for orig_msg, payload_msg in zip(original_messages, payload_msgs):
+                if payload_msg.get("role") == "assistant":
+                    rc = getattr(orig_msg, "additional_kwargs", {}).get(
+                        "reasoning_content"
+                    )
+                    if rc:
+                        payload_msg["reasoning_content"] = rc
+        except Exception:
+            pass
+        return payload
 
 from langgraph.prebuilt import ToolNode
 
@@ -69,8 +104,8 @@ class TradingAgentsGraph:
             self.deep_thinking_llm = ChatGoogleGenerativeAI(model=self.config["deep_think_llm"])
             self.quick_thinking_llm = ChatGoogleGenerativeAI(model=self.config["quick_think_llm"])
         elif self.config["llm_provider"].lower() == "deepseek":
-            self.deep_thinking_llm = ChatDeepSeek(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatDeepSeek(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
+            self.deep_thinking_llm = ChatDeepSeekFixed(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
+            self.quick_thinking_llm = ChatDeepSeekFixed(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
         
@@ -130,6 +165,7 @@ class TradingAgentsGraph:
                 [
                     # online tools
                     self.toolkit.get_stock_news,
+                    self.toolkit.get_twitter_stock_info,
                     # offline tools
                     self.toolkit.get_reddit_stock_info,
                 ]

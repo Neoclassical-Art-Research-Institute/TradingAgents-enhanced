@@ -1,7 +1,9 @@
 from .search_provider import (
     SearchProvider,
     GoogleSearchProvider,
-    OpenAISearchProvider
+    OpenAISearchProvider,
+    TavilySearchProvider,
+    NoSearchProvider
 )
 import hashlib
 import json
@@ -19,21 +21,35 @@ class SearchProviderFactory:
         # Create cache key from relevant config values
         cache_key_data = {
             "backend_url": config["backend_url"],
-            "model": config["quick_think_llm"]
+            "model": config["quick_think_llm"],
+            "search_provider": config.get("search_provider")
         }
         cache_key = hashlib.md5(json.dumps(cache_key_data, sort_keys=True).encode()).hexdigest()
-        
+
         # Return cached instance if exists
         if cache_key in SearchProviderFactory._cache:
             return SearchProviderFactory._cache[cache_key]
-        
+
+        # Explicit override: bypass the LLM-backend-based selection below entirely
+        if config.get("search_provider") == "none":
+            provider = NoSearchProvider()
+            SearchProviderFactory._cache[cache_key] = provider
+            return provider
+
+        if config.get("search_provider") == "tavily":
+            provider = TavilySearchProvider()
+            SearchProviderFactory._cache[cache_key] = provider
+            return provider
+
         # Create new instance
         backend_url = config["backend_url"]
         model = config["quick_think_llm"]
 
-        if  "deepseek" in backend_url: # Can DEEPSEEK even search Online? Lets just use backup for now
-            model = config[config["default_backup"]]["quick_think_llm"]
-            backend_url = config[config["default_backup"]]["backend_url"]
+        if  "deepseek" in backend_url: # DeepSeek can't do web search, use Google Search instead
+            google_model = config.get("backup_google", {}).get("quick_think_llm", "gemini-2.5-flash-lite")
+            provider = GoogleSearchProvider(google_model)
+            SearchProviderFactory._cache[cache_key] = provider
+            return provider
 
         if "generativelanguage.googleapis.com" in backend_url:
             provider = GoogleSearchProvider(model)
