@@ -1845,6 +1845,23 @@ pre.log {
 }
 .pos { color: var(--pos); }
 .neg { color: var(--neg); }
+
+/* Per-holding market-close auto-analyze toggle (detail actions row) */
+button.autoToggle.on {
+    color: var(--buy);
+    border-color: var(--buy);
+    background: color-mix(in srgb, var(--buy) 12%, transparent);
+}
+button.autoToggle.on:hover { background: color-mix(in srgb, var(--buy) 20%, transparent); }
+
+/* Drawer note under the Auto-analyze section */
+.sideDrawerNote {
+    margin: 0;
+    padding: 2px 16px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--muted);
+}
 .flat { color: var(--muted); }
 
 /* Header: brand | account tabs (flex) | actions — one compact row */
@@ -2069,6 +2086,9 @@ pre.log {
 .holdingsHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; position: sticky; top: -2px; background: var(--surface); z-index: 1; padding-top: 2px; }
 .holdingsHeadMain { min-width: 0; }
 .holdingsHead h2 { font-size: 18px; letter-spacing: -0.02em; margin: 0.2em 0 0; }
+.watchingPanel { background: var(--surface-strong); }
+.watchingPanel .holdingsHead { background: var(--surface-strong); margin-bottom: 6px; }
+.watchingPanel h2 { font-size: 15px; }
 .holdingsActions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; flex-wrap: wrap; }
 .holdingsSearch { width: clamp(120px, 40vw, 200px); }
 .holdingsSearch input { padding: 8px 12px; min-height: 36px; }

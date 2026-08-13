@@ -66,6 +66,13 @@
                 <span class="sideDrawerDivider"></span>
             </div>
             <button id="guideBtn" class="ghost sideDrawerBtn" type="button">Metric Guide</button>
+            <div class="sideDrawerSection">
+                <span class="sideDrawerSectionLabel">Auto-analyze</span>
+                <span class="sideDrawerDivider"></span>
+            </div>
+            <p id="autoAllStatus" class="sideDrawerNote">Market-close auto-analysis is opt-in per holding.</p>
+            <button id="autoAllOnBtn" class="ghost sideDrawerBtn" type="button">Enable for all holdings</button>
+            <button id="autoAllOffBtn" class="ghost sideDrawerBtn" type="button">Disable for all holdings</button>
         </div>
         <div class="sideDrawerFoot">
             <span class="sideDrawerStatus" id="serverState">Connecting...</span>
@@ -97,6 +104,22 @@
                         <label class="segmentOption"><input type="radio" name="holdSecMode" value="total" /><span>Total</span></label>
                     </div>
                     <div id="holdingsList" class="holdingsList"></div>
+                </section>
+                <section class="holdingsPanel watchingPanel" id="watchingPanel" hidden>
+                    <div class="holdingsHead">
+                        <div class="holdingsHeadMain">
+                            <h2 id="watchingTitle">Watching</h2>
+                            <p id="watchingMeta" class="sectionNote">Loading...</p>
+                        </div>
+                        <div class="holdingsActions">
+                            <div class="searchWrap holdingsSearch">
+                                <input id="watchingSearchBox" type="text" placeholder="Search watching" />
+                            </div>
+                            <button id="watchingRefreshBtn" class="ghost iconBtn" type="button" title="Refresh prices" aria-label="Refresh prices">⟳</button>
+                            <button id="watchingAddBtn" class="ghost iconBtn" type="button" title="Add holding" aria-label="Add holding">+</button>
+                        </div>
+                    </div>
+                    <div id="watchingList" class="holdingsList"></div>
                 </section>
             </aside>
         </section>
@@ -158,6 +181,7 @@
                 <button id="dEdit" class="iconActBtn" title="Edit">📝 <span class="btnTxt">Edit</span></button>
                 <button id="dDelete" class="danger iconActBtn" title="Delete">🗑️ <span class="btnTxt">Delete</span></button>
                 <button id="dRefresh" class="ghost iconActBtn" title="Refresh prices">🔄 <span class="btnTxt">Refresh</span></button>
+                <button id="dAutoAnalyze" class="ghost iconActBtn autoToggle" title="Auto-analyze at market close" aria-pressed="false">🕓 <span class="btnTxt">Auto: Off</span></button>
                 <button id="dAnalyze" class="primary">Analyze</button>
             </div>
         </div>
@@ -263,6 +287,9 @@
                 <div class="segmentToggle" id="cashTypeToggle" role="group" aria-label="Cash flow type">
                     <label class="segmentOption"><input type="radio" name="cashType" value="deposit" checked /><span>Deposit</span></label>
                     <label class="segmentOption"><input type="radio" name="cashType" value="withdrawal" /><span>Withdraw</span></label>
+                    <label class="segmentOption"><input type="radio" name="cashType" value="dividend" /><span>Dividend</span></label>
+                    <label class="segmentOption"><input type="radio" name="cashType" value="outside-gain" /><span>Outside +</span></label>
+                    <label class="segmentOption"><input type="radio" name="cashType" value="outside-loss" /><span>Outside −</span></label>
                 </div>
                 <div class="rowgrid">
                     <div class="row">
@@ -276,7 +303,7 @@
                 </div>
                 <div class="row">
                     <label>Note <span class="muted">(optional)</span></label>
-                    <input id="cashNote" type="text" placeholder="e.g. payday transfer" />
+                    <input id="cashNote" type="text" placeholder="e.g. AAPL dividend" />
                 </div>
                 <div id="cashHint" class="txnPreview"></div>
             </div>

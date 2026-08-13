@@ -53,6 +53,9 @@ const STRUCTURED_OPTION_KEYS = new Set(['preset', 'date', 'selected_analysts', '
 const els = {
     searchBox: document.getElementById("searchBox"),
     guideBtn: document.getElementById("guideBtn"),
+    autoAllOnBtn: document.getElementById("autoAllOnBtn"),
+    autoAllOffBtn: document.getElementById("autoAllOffBtn"),
+    autoAllStatus: document.getElementById("autoAllStatus"),
     menuBtn: document.getElementById("menuBtn"),
     sideDrawer: document.getElementById("sideDrawer"),
     drawerOverlay: document.getElementById("drawerOverlay"),
@@ -66,6 +69,12 @@ const els = {
     holdingsMeta: document.getElementById("holdingsMeta"),
     addHoldingBtn: document.getElementById("addHoldingBtn"),
     refreshPricesBtn: document.getElementById("refreshPricesBtn"),
+    watchingPanel: document.getElementById("watchingPanel"),
+    watchingList: document.getElementById("watchingList"),
+    watchingMeta: document.getElementById("watchingMeta"),
+    watchingSearchBox: document.getElementById("watchingSearchBox"),
+    watchingRefreshBtn: document.getElementById("watchingRefreshBtn"),
+    watchingAddBtn: document.getElementById("watchingAddBtn"),
     serverState: document.getElementById("serverState"),
     // add / edit holding
     postDlg: document.getElementById("postDlg"),
@@ -83,6 +92,7 @@ const els = {
     dSubtitle: document.getElementById("dSubtitle"),
     dContent: document.getElementById("dContent"),
     dAnalyze: document.getElementById("dAnalyze"),
+    dAutoAnalyze: document.getElementById("dAutoAnalyze"),
     dEdit: document.getElementById("dEdit"),
     dDelete: document.getElementById("dDelete"),
     dRefresh: document.getElementById("dRefresh"),
@@ -183,6 +193,12 @@ let TOUCH_DND = { active: false, row: null, tbody: null };
 const $ = (sel, root = document) => root.querySelector(sel);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const fmtMoney = (x) => (x == null || isNaN(x)) ? "" : `$${Number(x).toFixed(2)}`;
+const fmtFullMoney = (x) => {
+    if (x == null || isNaN(x)) return '--';
+    const n = Number(x);
+    const sign = n < 0 ? '-' : '';
+    return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
 const fmtPct = (x) => (x == null || isNaN(x)) ? "" : `${(x).toFixed(2)}%`;
 const toList = (s) => (s || "").split(",").map(t => t.trim()).filter(Boolean);
 const getAnalystCheckboxes = () => Array.from(document.querySelectorAll('.pAnalyst'));
@@ -224,6 +240,9 @@ function fmtSignedCompactMoney(x) {
     return `${sign}${fmtCompactMoney(Math.abs(n))}`;
 }
 const pnlClass = (x) => (x == null || isNaN(x) || x === 0) ? 'flat' : (x > 0 ? 'pos' : 'neg');
+// Maps a P&L sign onto the buy/sell/hold accent vocabulary (same colors as classBySuggestion)
+// so a held position's row accent can reuse the existing .rowAccent.buy/.sell/.hold CSS.
+const accentByPnl = (x) => (x == null || isNaN(x) || x === 0) ? 'hold' : (x > 0 ? 'buy' : 'sell');
 
 // --- account helpers
 function accountById(id) {
@@ -358,6 +377,7 @@ function renderAll() {
     renderNetworthPanel();
     renderSideBubbles();
     renderHoldingsList();
+    renderAutoAllStatus();
 }
 
 // Cash-flow ledger: derive current cash + contributions (net deposits, incl.
@@ -368,7 +388,10 @@ function accountLedger(account, holdings) {
     (account?.cashFlows || []).forEach((cf) => {
         const amt = Number(cf?.amount) || 0;
         if (amt <= 0) return;
-        events.push({ date: String(cf.date || ''), kind: cf.type === 'withdrawal' ? 'withdraw' : 'deposit', amount: amt });
+        const kind = cf.type === 'withdrawal' ? 'withdraw'
+            : (cf.type === 'dividend' || cf.type === 'outside-gain') ? 'dividend'
+            : (cf.type === 'fee' || cf.type === 'outside-loss') ? 'fee' : 'deposit';
+        events.push({ date: String(cf.date || ''), kind, amount: amt });
     });
     holdings.forEach((p) => {
         (p.transactions || []).forEach((t) => {
@@ -386,6 +409,8 @@ function accountLedger(account, holdings) {
             if (cash < e.amount - 1e-9) { const short = e.amount - cash; cash += short; contributions += short; implied += short; }
             cash -= e.amount;
         } else if (e.kind === 'sell') { cash += e.amount; }
+        else if (e.kind === 'dividend') { cash += e.amount; /* not a contribution — it's a return */ }
+        else if (e.kind === 'fee') { cash -= e.amount; /* loss/fee reduces cash but not contributions */ }
     }
     const r2 = (x) => Math.round(x * 100) / 100;
     return { cash: r2(cash), contributions: r2(contributions), implied: r2(implied) };
@@ -923,7 +948,7 @@ function renderAccountTabs() {
         tab.setAttribute('data-id', acc.id);
         const badge = isWatch
             ? `<span class="accountTabSub muted">${holdings.length} watched</span>`
-            : `<span class="accountTabSub ${pnlClass(totals.totalPnl)}">${totals.marketValue ? fmtCompactMoney(totals.marketValue) : '—'}</span>`;
+            : `<span class="accountTabSub ${pnlClass(totals.totalPnl)}">${totals.marketValue ? fmtFullMoney(totals.marketValue) : '—'}</span>`;
         tab.innerHTML = `<span class="accountTabName">${escapeHtml(acc.name || 'Account')}</span>${badge}`;
         tab.addEventListener('click', () => {
             if (isActive) openAccountDlg(acc);
@@ -986,8 +1011,8 @@ function renderNetworthPanel() {
     const nw = accountNetWorth(acc, holdings);
     const headline = NW_MODE === 'return'
         ? `<div class="nwValue ${pnlClass(nw.returnAbs)}">${fmtSignedMoney(nw.returnAbs)}</div>
-           <div class="nwSub"><span class="${pnlClass(nw.returnAbs)}">${nw.returnPct != null ? fmtSignedPct(nw.returnPct) : '—'}</span><span class="muted">total return on ${fmtCompactMoney(nw.contributions)} invested</span></div>`
-        : `<div class="nwValue">${fmtCompactMoney(nw.netWorth)}</div>
+           <div class="nwSub"><span class="${pnlClass(nw.returnAbs)}">${nw.returnPct != null ? fmtSignedPct(nw.returnPct) : '—'}</span><span class="muted">total return on ${fmtFullMoney(nw.contributions)} invested</span></div>`
+        : `<div class="nwValue">${fmtFullMoney(nw.netWorth)}</div>
            <div class="nwSub"><span class="${pnlClass(nw.returnAbs)}">${fmtSignedMoney(nw.returnAbs)}${nw.returnPct != null ? ` (${fmtSignedPct(nw.returnPct)})` : ''}</span><span class="muted">total return</span></div>`;
     const ranges = Object.entries(NW_RANGE_LABELS);
     // Disable a fixed range when more than ~90% of it would be empty "no data" filler, i.e.
@@ -1016,10 +1041,10 @@ function renderNetworthPanel() {
         </div>
       </div>
       <div class="nwBreak">
-        <span class="nwChip"><span class="nwChipLabel">Invested</span> ${fmtCompactMoney(nw.invested)}</span>
+        <span class="nwChip"><span class="nwChipLabel">Invested</span> ${fmtFullMoney(nw.invested)}</span>
         ${canEditAccount(acc)
-          ? `<button class="nwChip nwChipBtn" id="adjustCashBtn" type="button"><span class="nwChipLabel">Cash</span> ${fmtCompactMoney(nw.cash)} <span class="nwChipEdit">+ adjust</span></button>`
-          : `<span class="nwChip"><span class="nwChipLabel">Cash</span> ${fmtCompactMoney(nw.cash)}</span>`}
+          ? `<button class="nwChip nwChipBtn" id="adjustCashBtn" type="button"><span class="nwChipLabel">Cash</span> ${fmtFullMoney(nw.cash)} <span class="nwChipEdit">+ adjust</span></button>`
+          : `<span class="nwChip"><span class="nwChipLabel">Cash</span> ${fmtFullMoney(nw.cash)}</span>`}
       </div>
       <div class="nwControls">
         <div class="nwRanges" id="nwRanges">
@@ -1076,7 +1101,7 @@ function wireNwChartHover(host) {
         const v = NW_MODE === 'return' ? (p.value - p.contributions) : p.value;
         if (valueEl) {
             valueEl.className = NW_MODE === 'return' ? `nwValue ${pnlClass(v)}` : 'nwValue';
-            valueEl.textContent = NW_MODE === 'return' ? fmtSignedMoney(v) : fmtCompactMoney(v);
+            valueEl.textContent = NW_MODE === 'return' ? fmtSignedMoney(v) : fmtFullMoney(v);
         }
         if (subEl) {
             subEl.className = 'nwSub muted';
@@ -1129,8 +1154,8 @@ function renderSideBubbles() {
     const cash = accountLedger(acc, holdings).cash;
     host.innerHTML = `
       ${isWatch ? '' : `<div class="statGrid">
-        ${statTile('Invested', totals.marketValue != null ? fmtCompactMoney(totals.marketValue) : '—')}
-        ${statTile('Cash', fmtCompactMoney(cash))}
+        ${statTile('Invested', totals.marketValue != null ? fmtFullMoney(totals.marketValue) : '—')}
+        ${statTile('Cash', fmtFullMoney(cash))}
         ${statTile('Realized', fmtSignedMoney(totals.realizedPnl), pnlClass(totals.realizedPnl))}
       </div>`}
       <div class="panelCard">
@@ -1185,7 +1210,7 @@ function renderAllocationBars(host, rows, total) {
           <div class="allocRow">
             <div class="allocMeta"><span class="allocDot" style="background:${color}"></span><span class="allocTk">${escapeHtml(r.ticker)}</span><span class="allocPct muted">${pct.toFixed(1)}%</span></div>
             <div class="allocBarTrack"><div class="allocBarFill" style="width:${pct.toFixed(1)}%;background:${color}"></div></div>
-            <div class="allocVal">${fmtCompactMoney(r.value)}</div>
+            <div class="allocVal">${fmtFullMoney(r.value)}</div>
           </div>`;
     }).join('');
 }
@@ -1273,7 +1298,7 @@ function renderAllocationTreemap(host, rows, total) {
         el.style.height = `${(c.h / H * 100).toFixed(3)}%`;
         el.style.background = pnlTintColor(c.pct);
         el.style.borderColor = pnlTintColor(c.pct, true);
-        el.title = `${c.ticker} · ${fmtCompactMoney(c.value)} · ${weightPct.toFixed(1)}% of account` +
+        el.title = `${c.ticker} · ${fmtFullMoney(c.value)} · ${weightPct.toFixed(1)}% of account` +
             (c.pct != null ? ` · ${fmtSignedPct(c.pct)} P&L` : '');
         const tk = document.createElement('span');
         tk.className = 'tmTk';
@@ -1498,7 +1523,7 @@ function computeNetworthSeries(entries, cashFlows, interval = '1d') {
 
     // Ordered cash-event stream: deposits/withdrawals + buys/sells.
     const events = [];
-    (cashFlows || []).forEach((cf) => { const amt = Number(cf?.amount) || 0; if (amt > 0) events.push({ date: String(cf.date || ''), kind: cf.type === 'withdrawal' ? 'withdraw' : 'deposit', amount: amt }); });
+    (cashFlows || []).forEach((cf) => { const amt = Number(cf?.amount) || 0; if (amt > 0) { const kind = cf.type === 'withdrawal' ? 'withdraw' : (cf.type === 'dividend' || cf.type === 'outside-gain') ? 'dividend' : (cf.type === 'fee' || cf.type === 'outside-loss') ? 'fee' : 'deposit'; events.push({ date: String(cf.date || ''), kind, amount: amt }); } });
     entries.forEach(({ p }) => (p.transactions || []).forEach((t) => {
         if (!t || (t.type !== 'buy' && t.type !== 'sell') || !(Number(t.shares) > 0)) return;
         const gross = Number(t.shares) * Number(t.price), fee = Number(t.fee) || 0;
@@ -1537,6 +1562,8 @@ function computeNetworthSeries(entries, cashFlows, interval = '1d') {
             else if (e.kind === 'withdraw') { cash -= e.amount; contributions -= e.amount; }
             else if (e.kind === 'buy') { if (cash < e.amount - 1e-9) { const s = e.amount - cash; cash += s; contributions += s; } cash -= e.amount; }
             else if (e.kind === 'sell') { cash += e.amount; }
+            else if (e.kind === 'dividend') { cash += e.amount; }
+            else if (e.kind === 'fee') { cash -= e.amount; }
         }
         let holdings = 0;
         entries.forEach(({ tk }) => {
@@ -1610,7 +1637,7 @@ function drawNetworthChart(canvas, series) {
     if (!series || !series.hasData || !(series.points || []).length) {
         ctx.fillStyle = muted; ctx.textAlign = 'center';
         const msg = series && series.netNow != null
-            ? `${returnMode ? 'Return' : 'Net worth'} ${fmtCompactMoney(returnMode ? (series.netNow - (series.contributions || 0)) : series.netNow)} — record transactions to chart history.`
+            ? `${returnMode ? 'Return' : 'Net worth'} ${fmtFullMoney(returnMode ? (series.netNow - (series.contributions || 0)) : series.netNow)} — record transactions to chart history.`
             : 'Loading…';
         ctx.fillText(msg, w / 2, h / 2);
         return;
@@ -1625,7 +1652,7 @@ function drawNetworthChart(canvas, series) {
         ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke(); ctx.setLineDash([]);
         ctx.fillStyle = cssVar('--text', '#142032'); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
         ctx.font = '15px "Space Grotesk", sans-serif';
-        ctx.fillText(returnMode ? fmtSignedMoney(v) : fmtCompactMoney(v), padL + plotW / 2, y - 6);
+        ctx.fillText(returnMode ? fmtSignedMoney(v) : fmtFullMoney(v), padL + plotW / 2, y - 6);
         ctx.fillStyle = muted; ctx.textBaseline = 'top'; ctx.font = '12px "IBM Plex Sans", sans-serif';
         ctx.fillText(`${fmtNwPointDate(pts[0].date)} · add more history to see a trend`, padL + plotW / 2, y + 6);
         return;
@@ -1713,45 +1740,87 @@ function renderHoldingsList() {
     if (!host) return;
     const acc = getActiveAccount();
     const q = (els.searchBox?.value || '').toLowerCase().trim();
+    const wq = (els.watchingSearchBox?.value || '').toLowerCase().trim();
     if (!acc) {
         host.innerHTML = `<div class="empty-state"><div class="muted">Create an account to start tracking holdings.</div></div>`;
         if (els.holdingsTitle) els.holdingsTitle.textContent = 'Holdings';
         if (els.holdingsMeta) els.holdingsMeta.textContent = '';
+        if (els.watchingPanel) els.watchingPanel.hidden = true;
         return;
     }
     const isWatch = acc.type === 'watchlist';
     const all = POSTS.filter((p) => String(p.accountId) === String(acc.id));
     const holdings = holdingsForAccount(acc.id, q);
+    // The Watching panel has its own search box, so it re-queries independently
+    // rather than reusing the Holdings list's filtered set.
+    const watchSrc = isWatch ? [] : holdingsForAccount(acc.id, wq);
     if (els.holdingsTitle) els.holdingsTitle.textContent = isWatch ? 'Watching' : 'Holdings';
+
+    // A regular account's holdings with no shares left (fully sold) auto-move out of
+    // Holdings into the Watching panel below — watchlist-type accounts are unaffected
+    // since every ticker there is already "watching" by definition.
+    const held = isWatch ? holdings : holdings.filter((p) => holdingPosition(p).shares > 0);
+    const watching = isWatch ? [] : watchSrc.filter((p) => holdingPosition(p).shares <= 0);
+    const allHeld = isWatch ? all : all.filter((p) => holdingPosition(p).shares > 0);
+    const allWatching = isWatch ? [] : all.filter((p) => holdingPosition(p).shares <= 0);
+
     if (els.holdingsMeta) {
         els.holdingsMeta.textContent = q
-            ? `${holdings.length} of ${all.length} shown`
-            : `${all.length} ${isWatch ? 'tickers' : 'positions'}`;
+            ? `${held.length} of ${allHeld.length} shown`
+            : `${allHeld.length} ${isWatch ? 'tickers' : 'positions'}`;
+    }
+    renderHoldingsInto(host, held, acc, isWatch, {
+        showAdd: true,
+        emptyText: q ? 'No holdings match your search.' : `No ${isWatch ? 'tickers' : 'holdings'} in this ${isWatch ? 'watchlist' : 'account'} yet.`,
+        addLabel: `+ Add ${isWatch ? 'Ticker' : 'Holding'}`,
+        hasQuery: !!q,
+    });
+
+    if (els.watchingPanel) {
+        els.watchingPanel.hidden = isWatch;
+        if (!isWatch) {
+            if (els.watchingMeta) {
+                els.watchingMeta.textContent = wq
+                    ? `${watching.length} of ${allWatching.length} shown`
+                    : `${allWatching.length} ticker${allWatching.length === 1 ? '' : 's'}`;
+            }
+            renderHoldingsInto(els.watchingList, watching, acc, false, {
+                showAdd: true,
+                emptyText: wq ? 'No tickers match your search.' : 'No tickers being watched right now — sold-out positions land here automatically.',
+                addLabel: '+ Add Ticker',
+                hasQuery: !!wq,
+            });
+        }
     }
 
-    if (!holdings.length) {
-        host.innerHTML = `<div class="empty-state">
-          <div class="muted">${q ? 'No holdings match your search.' : `No ${isWatch ? 'tickers' : 'holdings'} in this ${isWatch ? 'watchlist' : 'account'} yet.`}</div>
-          ${(q || !canEditAccount(acc)) ? '' : `<button class="primary addHoldingTrigger" type="button">+ Add ${isWatch ? 'Ticker' : 'Holding'}</button>`}
-        </div>`;
-        host.querySelectorAll('.addHoldingTrigger').forEach((b) => b.addEventListener('click', () => openNew()));
-        return;
-    }
-
-    const wrap = document.createElement('div');
-    wrap.className = 'holdingTable' + (isWatch ? ' isWatch' : '');
-    holdings.forEach((post) => wrap.appendChild(buildHoldingRow(post, isWatch)));
-    if (canEditAccount(acc)) wrap.appendChild(buildAddHoldingRow(isWatch));
-    host.innerHTML = '';
-    host.appendChild(wrap);
-
-    // Background-refresh current prices, throttled
+    // Background-refresh current prices, throttled (across both lists)
     const now = Date.now();
-    holdings.slice(0, 12).forEach((p, i) => {
+    [...held, ...watching].slice(0, 12).forEach((p, i) => {
         const last = LAST_REFRESH.get(p.id) || 0;
         if (now - last < 60000) return;
         setTimeout(() => refreshSnapshot(p.id), i * 200);
     });
+}
+
+// Shared renderer for the Holdings and Watching panels: empty-state vs. a row per holding,
+// optionally with an "+ Add" trailer row.
+function renderHoldingsInto(host, list, acc, isWatch, { showAdd, emptyText, addLabel, hasQuery } = {}) {
+    if (!host) return;
+    if (!list.length) {
+        const canAdd = showAdd && addLabel && !hasQuery && canEditAccount(acc);
+        host.innerHTML = `<div class="empty-state">
+          <div class="muted">${emptyText}</div>
+          ${canAdd ? `<button class="primary addHoldingTrigger" type="button">${addLabel}</button>` : ''}
+        </div>`;
+        host.querySelectorAll('.addHoldingTrigger').forEach((b) => b.addEventListener('click', () => openNew()));
+        return;
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'holdingTable' + (isWatch ? ' isWatch' : '');
+    list.forEach((post) => wrap.appendChild(buildHoldingRow(post, isWatch)));
+    if (showAdd && addLabel && canEditAccount(acc)) wrap.appendChild(buildAddHoldingRow(addLabel));
+    host.innerHTML = '';
+    host.appendChild(wrap);
 }
 
 // Compact two-column row that fits the narrow side panel without overflow:
@@ -1761,7 +1830,6 @@ function buildHoldingRow(post, isWatch) {
     const pos = holdingPosition(post);
     const suggestion = getPrimarySuggestion(post);
     const row = document.createElement('div');
-    row.className = `holdingRow rowAccent ${classBySuggestion(suggestion)}`;
     row.setAttribute('data-id', post.id);
     const running = ['queued', 'running'].includes(getStatusState(post));
     const statusBadge = running ? getStatusBadgeHtml(post) : '';
@@ -1769,28 +1837,36 @@ function buildHoldingRow(post, isWatch) {
     const pendingComments = pendingCommentCount(post);
     const commentDot = pendingComments ? `<span class="commentDot" title="${pendingComments} un-handled comment${pendingComments === 1 ? '' : 's'}"></span>` : '';
 
-    let sub, primary, secondary;
+    // The AI suggestion (buy/sell/hold) only colors the row when there's no actual position
+    // to judge — once shares are held, the row accent + value text instead track real P&L
+    // (day or total, per the toggle), so a "Hold"-rated stock that's up doesn't read as grey/dead.
+    let sub, primary, secondary, accentCls, tkCls = '';
     if (isWatch) {
         sub = post.title && post.title !== ticker ? post.title : (post.note || 'watching');
         primary = pos.current != null ? fmtMoney(pos.current) : '—';
         secondary = '';
+        accentCls = classBySuggestion(suggestion);
     } else if (pos.shares > 0) {
         sub = `${fmtShares(pos.shares)} sh · avg ${pos.avgCost != null ? fmtMoney(pos.avgCost) : '—'}`;
-        primary = pos.marketValue != null ? fmtCompactMoney(pos.marketValue) : '—';
         const pnlAbs = HOLD_SEC_MODE === 'day' ? pos.dayChange : pos.unrealizedPnl;
         const pnlPct = HOLD_SEC_MODE === 'day' ? pos.dayChangePct : pos.pct;
+        accentCls = accentByPnl(pnlAbs);
+        tkCls = pnlClass(pnlAbs);
+        primary = pos.marketValue != null ? `<span class="${tkCls}">${fmtFullMoney(pos.marketValue)}</span>` : '—';
         secondary = pnlAbs != null
-            ? `<span class="${pnlClass(pnlAbs)}">${fmtSignedMoney(pnlAbs)}${pnlPct != null ? ` · ${fmtSignedPct(pnlPct)}` : ''}</span>`
+            ? `<span class="${tkCls}">${fmtSignedMoney(pnlAbs)}${pnlPct != null ? ` · ${fmtSignedPct(pnlPct)}` : ''}</span>`
             : '';
     } else {
         sub = post.title && post.title !== ticker ? post.title : 'no position';
         primary = pos.current != null ? fmtMoney(pos.current) : '—';
         secondary = '<span class="muted">not held</span>';
+        accentCls = classBySuggestion(suggestion);
     }
+    row.className = `holdingRow rowAccent ${accentCls}`;
 
     row.innerHTML = `
       <div class="hMain">
-        <div class="hTopline"><span class="htk">${escapeHtml(ticker)}</span> ${sigBadge}${statusBadge}${commentDot}</div>
+        <div class="hTopline"><span class="htk ${tkCls}">${escapeHtml(ticker)}</span> ${sigBadge}${statusBadge}${commentDot}</div>
         <div class="hSub muted">${escapeHtml(sub)}</div>
       </div>
       <div class="hStats">
@@ -1802,14 +1878,14 @@ function buildHoldingRow(post, isWatch) {
 }
 
 // Add-holding action styled as a row at the bottom of the holdings list.
-function buildAddHoldingRow(isWatch) {
+function buildAddHoldingRow(label) {
     const row = document.createElement('div');
     row.className = 'holdingRow holdingAddRow';
     row.setAttribute('role', 'button');
     row.setAttribute('tabindex', '0');
     row.innerHTML = `
       <div class="hMain">
-        <div class="hTopline"><span class="htk">+ Add ${isWatch ? 'Ticker' : 'Holding'}</span></div>
+        <div class="hTopline"><span class="htk">${escapeHtml(label)}</span></div>
       </div>`;
     const trigger = () => openNew();
     row.addEventListener('click', trigger);
@@ -1972,6 +2048,21 @@ function renderAnalyzeButton(id) {
     }
     els.dAnalyze.textContent = post.analysis?.completedAt ? 'Re-run' : 'Analyze';
     els.dAnalyze.classList.add('primary');
+}
+
+// Reflect a holding's market-close auto-analyze opt-in on its toggle button.
+function renderAutoAnalyzeButton(id) {
+    const btn = els.dAutoAnalyze;
+    if (!btn) return;
+    const post = getPostById(id);
+    const on = !!(post && post.autoAnalyze);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.classList.toggle('on', on);
+    const label = btn.querySelector('.btnTxt');
+    if (label) label.textContent = on ? 'Auto: On' : 'Auto: Off';
+    btn.title = on
+        ? 'Auto-analyzing at market close — click to turn off'
+        : 'Auto-analyze at market close is off — click to turn on';
 }
 
 function stopDetailAutoRefresh() {
@@ -2337,6 +2428,27 @@ function openDetail(id) {
             syncDetailPanels(fresh);
         }
     };
+    renderAutoAnalyzeButton(id);
+    els.dAutoAnalyze.onclick = async () => {
+        const cur = getPostById(id);
+        const next = !(cur && cur.autoAnalyze);
+        els.dAutoAnalyze.disabled = true;
+        try {
+            await api(`/api/stocks/${encodeURIComponent(id)}/auto-analyze`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: next }),
+            });
+            if (cur) { cur.autoAnalyze = next; upsertPost(cur); }
+            renderAutoAnalyzeButton(id);
+            renderAll();
+            showToast(next ? 'Auto-analyze on for this holding' : 'Auto-analyze off');
+        } catch (e) {
+            showToast(`Failed: ${e.message || e}`);
+        } finally {
+            els.dAutoAnalyze.disabled = false;
+        }
+    };
     els.dEdit.onclick = () => openEdit(p);
     els.dDelete.onclick = () => removePost(id);
     els.dRefresh.onclick = () => refreshSnapshot(id, { force: true });
@@ -2385,7 +2497,7 @@ function renderPositionCard(p) {
           ${row('Shares', fmtShares(pos.shares))}
           ${row('Avg cost', pos.avgCost != null ? fmtMoney(pos.avgCost) : '—')}
           ${row('Last price', pos.current != null ? fmtMoney(pos.current) : '—')}
-          ${row('Market value', pos.marketValue != null ? fmtCompactMoney(pos.marketValue) : '—')}
+          ${row('Market value', pos.marketValue != null ? fmtFullMoney(pos.marketValue) : '—')}
           ${row('Unrealized P&L', pos.unrealizedPnl != null ? `${fmtSignedMoney(pos.unrealizedPnl)} (${fmtSignedPct(pos.pct)})` : '—', pnlClass(pos.unrealizedPnl))}
           ${row('Realized P&L', fmtSignedMoney(pos.realizedPnl), pnlClass(pos.realizedPnl))}
         `;
@@ -3454,6 +3566,7 @@ function initChartInteractions(canvas) {
 
 async function refreshAllSnapshots() {
     if (els.refreshPricesBtn) els.refreshPricesBtn.disabled = true;
+    if (els.watchingRefreshBtn) els.watchingRefreshBtn.disabled = true;
     try {
         await api('/api/refresh-snapshots', { method: 'POST' });
         await loadPosts();
@@ -3467,6 +3580,7 @@ async function refreshAllSnapshots() {
         showToast('Prices refreshed.');
     } finally {
         if (els.refreshPricesBtn) els.refreshPricesBtn.disabled = false;
+        if (els.watchingRefreshBtn) els.watchingRefreshBtn.disabled = false;
     }
 }
 
@@ -3895,6 +4009,7 @@ function refreshDetailEditMode(post) {
     setShown(els.dEdit, editable);
     setShown(els.dDelete, editable);
     setShown(els.dAnalyze, editable);
+    setShown(els.dAutoAnalyze, editable);
     setShown(document.getElementById('addBuyBtn'), editable);
     setShown(document.getElementById('addSellBtn'), editable);
     const saveCfg = document.getElementById('saveAnalysisCfg');
@@ -4412,11 +4527,48 @@ holdSecToggle?.querySelectorAll('input[name="holdSecMode"]').forEach((input) => 
         renderHoldingsList();
     });
 });
+// Global market-close auto-analyze controls (drawer)
+function renderAutoAllStatus() {
+    if (!els.autoAllStatus) return;
+    const total = POSTS.length;
+    const on = POSTS.filter((p) => p && p.autoAnalyze).length;
+    els.autoAllStatus.textContent = on === 0
+        ? `Off for all ${total} holding${total === 1 ? '' : 's'} — analyze manually, or enable per holding.`
+        : `Auto-analyzing ${on} of ${total} holding${total === 1 ? '' : 's'} at market close.`;
+}
+async function bulkAutoAnalyze(enabled) {
+    if (!POSTS.length) { showToast('No holdings yet.'); return; }
+    if (!enabled && !confirm('Turn OFF auto-analyze for every holding?')) return;
+    els.autoAllOnBtn && (els.autoAllOnBtn.disabled = true);
+    els.autoAllOffBtn && (els.autoAllOffBtn.disabled = true);
+    try {
+        const res = await api('/api/auto-analyze/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+        });
+        POSTS.forEach((p) => { if (p) p.autoAnalyze = enabled; });
+        if (currentDetailId) renderAutoAnalyzeButton(currentDetailId);
+        renderAutoAllStatus();
+        renderAll();
+        showToast(`Auto-analyze ${enabled ? 'enabled' : 'disabled'} for ${res.changed} holding${res.changed === 1 ? '' : 's'}.`);
+    } catch (e) {
+        showToast(`Failed: ${e.message || e}`);
+    } finally {
+        els.autoAllOnBtn && (els.autoAllOnBtn.disabled = false);
+        els.autoAllOffBtn && (els.autoAllOffBtn.disabled = false);
+    }
+}
+els.autoAllOnBtn?.addEventListener('click', () => bulkAutoAnalyze(true));
+els.autoAllOffBtn?.addEventListener('click', () => bulkAutoAnalyze(false));
 els.guideBtn?.addEventListener('click', () => openGuide());
 els.guideClose?.addEventListener('click', () => els.guideDlg.close());
 els.mgLoadBtn?.addEventListener('click', loadGuideTicker);
 els.mgTickerInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadGuideTicker(); });
 els.searchBox?.addEventListener("input", renderHoldingsList);
+els.watchingSearchBox?.addEventListener("input", renderHoldingsList);
+els.watchingRefreshBtn?.addEventListener('click', refreshAllSnapshots);
+els.watchingAddBtn?.addEventListener('click', () => openNew());
 
 // Transaction dialog
 els.txnSave?.addEventListener('click', saveTxn);

@@ -228,7 +228,10 @@ def _normalize_cashflows(raw: Any) -> List[Dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("type") or "").strip().lower()
-        if kind not in ("deposit", "withdrawal"):
+        # outside-gain/outside-loss: P&L realized outside tracked holdings
+        # (prediction markets, event contracts, crypto). Cash-wise they behave
+        # like dividend/fee but are labeled separately from equity income.
+        if kind not in ("deposit", "withdrawal", "dividend", "fee", "outside-gain", "outside-loss"):
             continue
         try:
             amount = round(float(item.get("amount")), 2)
@@ -624,6 +627,12 @@ def _normalize_post_for_storage(payload: Dict[str, Any], existing: Dict[str, Any
     note = str((payload.get("note") if "note" in payload else existing.get("note")) or "").strip()[:600]
     account_id = str((payload.get("accountId") if "accountId" in payload else existing.get("accountId")) or "").strip()
     options = _normalize_options(payload.get("options") if "options" in payload else existing.get("options") or {})
+    # Opt-in flag for the daily market-close auto-analysis (default OFF so no
+    # holding costs LLM tokens automatically; the user enables it per holding).
+    auto_analyze = _coerce_bool(
+        payload.get("autoAnalyze") if "autoAnalyze" in payload else existing.get("autoAnalyze"),
+        False,
+    )
 
     if "transactions" in payload:
         transactions = _normalize_transactions(payload.get("transactions"))
@@ -645,6 +654,7 @@ def _normalize_post_for_storage(payload: Dict[str, Any], existing: Dict[str, Any
         "options": options,
         "transactions": transactions,
         "purchases": purchases,
+        "autoAnalyze": auto_analyze,
     }
 
 def _get_personal_config_copy() -> Dict[str, Any]:
@@ -912,11 +922,27 @@ def get_latest_price(ticker: str) -> float | None:
 def get_price_and_prev_close(ticker: str) -> tuple[float | None, float | None]:
     """Latest price plus the prior trading day's close (for day-change deltas).
 
-    The daily bars (period=5d) always end on today regardless of whether the
-    market is open, so closes[-2] is reliably "yesterday's close" in both cases.
+    Uses yfinance's `.info` regularMarketPrice/regularMarketPreviousClose — Yahoo's
+    own paired quote fields, matching the day-change % shown on Yahoo/Google Finance.
+    Two prior approaches were tried and both turned out wrong:
+      - `history(period="5d")[-2]`: intraday, Yahoo's daily bars don't include a live
+        "today" row, so closes[-1] was actually yesterday's close and closes[-2] the
+        day before — an off-by-one that silently inverted the day-change sign.
+      - `fast_info.previous_close`: disagreed with `.info.regularMarketPreviousClose`
+        by a few percent on every ticker tested (TQQQ, LMT, AAPL, TSLA) — it appears
+        to source from a different/stale bar than the `last_price` it's paired with.
     """
     if yf is None:
         return None, None
+    try:
+        info = yf.Ticker(ticker).info or {}
+        current = info.get("regularMarketPrice")
+        prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
+        if current is not None:
+            return float(current), (float(prev_close) if prev_close is not None else None)
+    except Exception:
+        pass
+    # Fallback: daily/intraday history, for tickers `.info` can't resolve.
     try:
         info = yf.Ticker(ticker)
         daily = info.history(period="5d", interval="1d")
@@ -1511,6 +1537,7 @@ def create_post():
         "transactions": normalized["transactions"],
         "options": normalized["options"],
         "purchases": normalized["purchases"],  # {ticker: avgCost} (back-compat)
+        "autoAnalyze": normalized["autoAnalyze"],  # opt-in to daily market-close analysis
         "analysis": None,  # last TradingAgents run
         "snapshot": {}     # {ticker: {current, pct, shares, avgCost, marketValue, ...}}
     }
@@ -1604,6 +1631,7 @@ def update_post(pid):
     p["transactions"] = normalized["transactions"]
     p["options"] = normalized["options"]
     p["purchases"] = normalized["purchases"]
+    p["autoAnalyze"] = normalized["autoAnalyze"]
 
     analysis_inputs_changed = previous_tickers != normalized["tickers"] or previous_options != normalized["options"]
     if analysis_inputs_changed:
@@ -2193,21 +2221,76 @@ def analyze_post_stream(pid):
     }
     return Response(stream_with_context(gen()), headers=headers)
 
-@app.post("/api/analyze-all")
-def analyze_all():
+def _enqueue_auto_analyze() -> int:
+    """Enqueue holdings that opted in to daily market-close analysis; return count.
+
+    Auto-analysis is opt-in per holding (holding.autoAnalyze). Holdings default
+    to OFF, so a fresh install / untouched holdings cost no LLM tokens at market
+    close — the user manually clicks Analyze, or flips a holding's toggle on.
+    """
     posts = _read()
+    queued = 0
     with JOB_LOCK:
         for p in posts:
             pid = str(p.get("id"))
             if not (p.get("tickers") or []):
                 continue
+            if not _coerce_bool(p.get("autoAnalyze"), False):
+                continue  # not opted in — skip
             # Skip if already running or queued
             if pid == CURRENT_JOB.get("pid") or pid in JOB_QUEUE:
                 continue
             JOB_QUEUE.append(pid)
             JOB_STATE[pid] = 'queued'
             _set_state(pid, 'queued')
-    return jsonify(_get_job_states())
+            queued += 1
+    return queued
+
+@app.post("/api/analyze-all")
+def analyze_all():
+    queued = _enqueue_auto_analyze()
+    return jsonify({"queued": queued, "states": _get_job_states()})
+
+@app.post("/api/stocks/<pid>/auto-analyze")
+def set_auto_analyze(pid):
+    """Flip a single holding's market-close auto-analysis opt-in.
+
+    Lightweight vs. the full PUT: it only touches the flag, so it never clears
+    an existing analysis report or recomputes the snapshot.
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    enabled = _coerce_bool(payload.get("enabled"), False)
+    posts = _read()
+    p = _find(posts, pid)
+    if not p:
+        return jsonify({"message": "Not found"}), 404
+    p["autoAnalyze"] = enabled
+    p["updatedAt"] = _utcnow_iso()
+    _write(posts)
+    return jsonify({"id": pid, "autoAnalyze": enabled})
+
+@app.post("/api/auto-analyze/bulk")
+def bulk_auto_analyze():
+    """Enable or disable market-close auto-analysis across many holdings at once.
+
+    Body: {"enabled": bool, "accountId": optional str}. When accountId is given,
+    only that account's holdings are changed; otherwise all holdings are.
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    enabled = _coerce_bool(payload.get("enabled"), False)
+    account_id = str(payload.get("accountId") or "").strip()
+    posts = _read()
+    changed = 0
+    for p in posts:
+        if account_id and str(p.get("accountId")) != account_id:
+            continue
+        if _coerce_bool(p.get("autoAnalyze"), False) != enabled:
+            p["autoAnalyze"] = enabled
+            p["updatedAt"] = _utcnow_iso()
+            changed += 1
+    if changed:
+        _write(posts)
+    return jsonify({"enabled": enabled, "changed": changed, "accountId": account_id or None})
 
 _CHART_CACHE: Dict[Any, Any] = {}  # (ticker, period, interval) -> (timestamp, payload)
 _CHART_TTL = 60.0  # seconds; the net-worth chart re-fetches every holding on each range click
@@ -2285,8 +2368,9 @@ def auto_regen_loop():
             # Run after waking
             with app.app_context():
                 try:
-                    analyze_all()
-                    print(f"[Auto] Regenerated at {datetime.now(APP_TZ)}")
+                    queued = _enqueue_auto_analyze()
+                    print(f"[Auto] Market-close run at {datetime.now(APP_TZ)}: "
+                          f"{queued} opted-in holding(s) queued")
                 except Exception:
                     traceback.print_exc()
         except Exception:
