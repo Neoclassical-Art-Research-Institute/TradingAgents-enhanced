@@ -8,6 +8,8 @@ Two ways in:
   * Agents/scripts: `Authorization: Bearer ta_...` API tokens. Scope "read" allows
     GET only; scope "write" also allows changing portfolio data. Tokens can never
     manage tokens or settings. Only a SHA-256 hash of each token is stored.
+  * Optional public read ("public_read" in auth.json): anonymous visitors may view
+    pages and GET the API, but never edit, run analyses, or see settings/tokens/audit.
 
 State lives in data/auth.json (password hash, tokens, session epoch). Manage it
 with `python manage_server.py ...` or from the UI (Menu → API access).
@@ -35,6 +37,9 @@ TOKEN_SCOPES = ("read", "write")
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 MIN_PASSWORD_LENGTH = 10
 PUBLIC_ENDPOINTS = {"login", "static", "serve_static", "health"}
+# GET endpoints that never count as "viewing": anonymous visitors can't call them
+# even with public read on (settings/token/audit pages, live model listing).
+PRIVATE_GET_ENDPOINTS = {"get_settings", "auth_list_tokens", "audit_tail", "list_provider_models"}
 AUDIT_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -99,6 +104,16 @@ class AuthStore:
         if not stored:
             return False
         return check_password_hash(stored, password)
+
+    def public_read(self) -> bool:
+        with self._lock:
+            return bool(self._load().get("public_read"))
+
+    def set_public_read(self, enabled: bool) -> None:
+        with self._lock:
+            data = self._load()
+            data["public_read"] = bool(enabled)
+            self._save(data)
 
     def session_epoch(self) -> int:
         with self._lock:
@@ -308,7 +323,9 @@ def require_admin(fn):
     return wrapper
 
 
-def init_auth(app: Flask, data_dir: str) -> AuthStore:
+def init_auth(app: Flask, data_dir: str, costly_get_endpoints: frozenset = frozenset()) -> AuthStore:
+    """`costly_get_endpoints`: GET routes with real side effects (e.g. running an LLM
+    analysis). They require write access: a write token or a browser session."""
     store = AuthStore(data_dir)
     audit = AuditLog(data_dir)
     login_limiter = FailureLimiter(limit=5, window=15 * 60)
@@ -360,7 +377,7 @@ def init_auth(app: Flask, data_dir: str) -> AuthStore:
                 token_limiter.fail(ip)
                 audit.write(event="token_rejected", ip=ip, method=request.method, path=request.path)
                 return unauthorized("Invalid, revoked or expired API token.")
-            if rec["scope"] != "write" and request.method not in SAFE_METHODS:
+            if rec["scope"] != "write" and (request.method not in SAFE_METHODS or request.endpoint in costly_get_endpoints):
                 return unauthorized("This token is read-only.", status=403)
             g.auth = {"kind": "token", "name": rec["name"], "scope": rec["scope"], "id": rec["id"]}
             return None
@@ -374,9 +391,18 @@ def init_auth(app: Flask, data_dir: str) -> AuthStore:
             g.auth = {"kind": "session", "name": "browser", "scope": "admin"}
             return None
 
+        if (
+            store.public_read()
+            and request.method in SAFE_METHODS
+            and request.endpoint not in costly_get_endpoints
+            and request.endpoint not in PRIVATE_GET_ENDPOINTS
+        ):
+            g.auth = {"kind": "anonymous", "name": "viewer", "scope": "view"}
+            return None
+
         if not store.has_password() and not request.path.startswith("/api/"):
             return redirect(url_for("login"))
-        return unauthorized("Sign in, or send an API token.")
+        return unauthorized("Sign in to make changes." if store.public_read() else "Sign in, or send an API token.")
 
     @app.after_request
     def _finish(resp):
@@ -402,7 +428,10 @@ def init_auth(app: Flask, data_dir: str) -> AuthStore:
     @app.context_processor
     def _template_vars():
         sess = session.get("auth") or {}
-        return {"csp_nonce": getattr(g, "csp_nonce", ""), "csrf_token": sess.get("csrf", "")}
+        auth = getattr(g, "auth", None) or {}
+        # "admin" (browser session), "write"/"read" (API token) or "view" (anonymous)
+        viewer = "admin" if auth.get("kind") == "session" else auth.get("scope", "view")
+        return {"csp_nonce": getattr(g, "csp_nonce", ""), "csrf_token": sess.get("csrf", ""), "viewer": viewer}
 
     # -- routes -----------------------------------------------------------
     @app.route("/login", methods=["GET", "POST"])
@@ -433,7 +462,7 @@ def init_auth(app: Flask, data_dir: str) -> AuthStore:
         session["login_csrf"] = secrets.token_urlsafe(32)
         status = 200 if not error else 401
         return render_template("login.html", configured=configured, error=error, next=nxt,
-                               login_csrf=session["login_csrf"]), status
+                               login_csrf=session["login_csrf"], public_read=store.public_read()), status
 
     @app.post("/logout")
     def logout():

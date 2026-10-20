@@ -6,6 +6,7 @@
   venv/bin/python manage_server.py token list
   venv/bin/python manage_server.py token revoke <id>
   venv/bin/python manage_server.py logout-all
+  venv/bin/python manage_server.py public-read on|off|status
 
 Changes take effect immediately; no restart needed.
 """
@@ -26,6 +27,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("set-password", help="Set or change the web login password (signs out all sessions)")
     sub.add_parser("logout-all", help="Sign out every browser session")
+    pub = sub.add_parser("public-read", help="Let anyone view (not edit) without signing in")
+    pub.add_argument("state", choices=["on", "off", "status"])
     tok = sub.add_parser("token", help="Manage API tokens")
     tsub = tok.add_subparsers(dest="action", required=True)
     create = tsub.add_parser("create")
@@ -51,6 +54,11 @@ def main() -> int:
             print(e, file=sys.stderr)
             return 1
         print("Password set. Existing browser sessions were signed out.")
+    elif args.cmd == "public-read":
+        if args.state != "status":
+            store.set_public_read(args.state == "on")
+        print("Public read is", "ON: anyone can view; editing needs sign-in." if store.public_read()
+              else "OFF: viewing needs sign-in or an API token.")
     elif args.cmd == "logout-all":
         store.bump_session_epoch()
         print("All browser sessions signed out.")

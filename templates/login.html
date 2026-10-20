@@ -19,6 +19,7 @@
         .loginError { background: var(--danger-soft); color: var(--sell); border-radius: var(--radius-sm);
             padding: 10px 12px; margin-bottom: 14px; font-size: 14px; }
         .loginCard code { font-size: 12px; word-break: break-all; }
+        .loginBack { margin: 16px 0 0; text-align: center; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -37,6 +38,7 @@
             </div>
             <button class="primary" type="submit">Sign in</button>
         </form>
+        {% if public_read %}<p class="muted loginBack"><a href="/stock">← Back to read-only view</a></p>{% endif %}
         {% else %}
         <p class="muted">No password has been set yet. On the server, run:</p>
         <p><code>venv/bin/python manage_server.py set-password</code></p>

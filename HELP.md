@@ -66,7 +66,12 @@ venv/bin/python manage_server.py token create --name "my agent" --scope write --
 venv/bin/python manage_server.py token list
 venv/bin/python manage_server.py token revoke <id>
 venv/bin/python manage_server.py logout-all       # sign out every browser
+venv/bin/python manage_server.py public-read on   # anyone can view; editing needs sign-in (off = login to view)
 ```
+
+With public read on, visitors who aren't signed in see everything read-only, with a "Sign in to
+edit" button. They can't change data, run analyses (including `/api/analyze-stream`), or open
+Models & search, API access, or the audit log.
 
 Tokens can also be created and revoked in the UI under **Menu → API access**, which also shows
 recent changes from the audit log (`data/audit.log`).

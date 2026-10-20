@@ -81,7 +81,8 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 # nginx terminates TLS and forwards X-Forwarded-For/-Proto (see proxy_params); trust exactly one hop.
 if os.environ.get("TA_TRUST_PROXY", "1") != "0":
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-AUTH = init_auth(app, DATA_DIR)
+# analyze-stream is a GET that runs a full LLM analysis: treat it as a write.
+AUTH = init_auth(app, DATA_DIR, costly_get_endpoints=frozenset({"analyze_post_stream"}))
 SETTINGS = SettingsStore(DATA_DIR, lambda: _get_personal_config_copy())
 
 # -------------------
@@ -2495,7 +2496,8 @@ def api_v1_index():
 def api_v1_portfolio():
     accounts = _ensure_accounts()
     posts = _read()
-    if _coerce_bool(request.args.get("refresh"), False):
+    can_write = (getattr(g, "auth", None) or {}).get("scope") in ("write", "admin")
+    if can_write and _coerce_bool(request.args.get("refresh"), False):
         for p in posts:
             p["snapshot"] = _build_holding_snapshot(p)
             p["updatedAt"] = _utcnow_iso()

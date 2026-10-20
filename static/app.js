@@ -252,10 +252,18 @@ function setActiveAccount(id) {
 // --- edit-mode (soft keyword lock) helpers
 // An account with no keyword is always editable. One with a keyword starts
 // locked (read mode) each session and must be unlocked with its keyword.
+// Visitors who aren't signed in (public read) see every account locked; the
+// lock button sends them to the login page instead.
+const VIEWER = document.querySelector('meta[name="ta-viewer"]')?.content || 'admin';
+const READ_ONLY_VIEWER = VIEWER !== 'admin' && VIEWER !== 'write';
+function goToLogin() {
+    location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+}
 function accountHasKeyword(acc) {
     return !!(acc && typeof acc.keyword === 'string' && acc.keyword.length);
 }
 function accountLocked(acc) {
+    if (READ_ONLY_VIEWER) return true;
     return accountHasKeyword(acc) && !UNLOCKED_ACCOUNTS.has(String(acc.id));
 }
 function canEditAccount(acc) {
@@ -272,6 +280,7 @@ function lockAccount(acc) {
     showToast('Locked · read mode');
 }
 function unlockAccount(acc) {
+    if (READ_ONLY_VIEWER) { goToLogin(); return; }
     if (!acc) return;
     if (!accountHasKeyword(acc)) return;
     const entry = prompt(`Enter the keyword for "${acc.name}" to enable edit mode:`);
@@ -286,12 +295,16 @@ function unlockAccount(acc) {
     }
 }
 function toggleAccountLock(acc) {
+    if (READ_ONLY_VIEWER) { goToLogin(); return; }
     if (!acc) return;
     if (accountLocked(acc)) unlockAccount(acc);
     else lockAccount(acc);
 }
 // Lock toggle button markup for the net-worth/watchlist panel header.
 function lockControlHtml(acc) {
+    if (READ_ONLY_VIEWER) {
+        return `<button class="ghost iconBtn lockBtn is-locked" id="lockToggleBtn" type="button" aria-label="Read-only. Sign in to edit" title="Read-only. Sign in to edit">🔒 <span class="btnTxt">Sign in to edit</span></button>`;
+    }
     if (!accountHasKeyword(acc)) return '';
     const locked = accountLocked(acc);
     return `<button class="ghost iconBtn lockBtn ${locked ? 'is-locked' : 'is-unlocked'}" id="lockToggleBtn" type="button" aria-label="${locked ? 'Locked' : 'Editing'}" title="${locked ? 'Locked — click to enter keyword' : 'Editing — click to lock'}">${locked ? '🔒' : '🔓'} <span class="btnTxt">${locked ? 'Locked' : 'Editing'}</span></button>`;
@@ -954,11 +967,12 @@ function renderAccountTabs() {
             : `<span class="accountTabSub ${pnlClass(totals.totalPnl)}">${totals.marketValue ? fmtFullMoney(totals.marketValue) : '—'}</span>`;
         tab.innerHTML = `<span class="accountTabName">${escapeHtml(acc.name || 'Account')}</span>${badge}`;
         tab.addEventListener('click', () => {
-            if (isActive) openAccountDlg(acc);
+            if (isActive) { if (!READ_ONLY_VIEWER) openAccountDlg(acc); }
             else setActiveAccount(acc.id);
         });
         host.appendChild(tab);
     });
+    if (READ_ONLY_VIEWER) return;
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'accountTab accountTabAdd';
@@ -976,7 +990,7 @@ function renderNetworthPanel() {
     if (!acc) {
         host.innerHTML = `<div class="panelCard emptyPanel">
             <div class="muted">No accounts yet.</div>
-            <button class="primary" id="firstAccountBtn" type="button">+ New Account</button>
+            ${READ_ONLY_VIEWER ? '' : '<button class="primary" id="firstAccountBtn" type="button">+ New Account</button>'}
         </div>`;
         document.getElementById('firstAccountBtn')?.addEventListener('click', () => openAccountDlg(null));
         return;
@@ -4517,6 +4531,10 @@ els.sideDrawer?.querySelectorAll('button:not(#drawerClose)').forEach((b) => b.ad
 // Add-holding triggers (header + holdings panel + empty states)
 document.querySelectorAll('.addHoldingTrigger').forEach((b) => b.addEventListener('click', () => openNew()));
 els.refreshPricesBtn?.addEventListener('click', refreshAllSnapshots);
+// Refresh-all and add buttons are edit actions (POST); hide them for read-only visitors.
+if (READ_ONLY_VIEWER) {
+    [els.refreshPricesBtn, els.watchingRefreshBtn, els.addHoldingBtn, els.watchingAddBtn].forEach((b) => { if (b) b.style.display = 'none'; });
+}
 els.addHoldingBtn?.addEventListener('click', () => openNew());
 
 // Holdings list hSecondary mode toggle (Day vs Total return)
