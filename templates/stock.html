@@ -4,11 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <title>TradingAgents Watch</title>
+    <meta name="csrf-token" content="{{ csrf_token }}" />
     <link rel="icon" type="image/png" href="/static/favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
-    <script>
+    <script nonce="{{ csp_nonce }}">
         // Cache-busting version stamp injected by the server (mtime of app.js/app.css).
         // Falls back to empty when opened as a file:// page (template not rendered).
         var ASSET_V = "{{ asset_v|default('') }}";
@@ -24,22 +25,9 @@
             document.head.appendChild(l);
         })();
     </script>
-    <script>
-        (function(){
-            var hasServer = location.protocol === 'http:' || location.protocol === 'https:';
-            if (!hasServer) return;
-            try {
-                var s1 = document.createElement('script');
-                s1.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
-                s1.defer = true;
-                document.head.appendChild(s1);
-                var s2 = document.createElement('script');
-                s2.src = 'https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js';
-                s2.defer = true;
-                document.head.appendChild(s2);
-            } catch {}
-        })();
-    </script>
+    <!-- Vendored (pinned) so no third-party script runs on this page. -->
+    <script src="/static/vendor/marked-15.0.12.min.js" defer></script>
+    <script src="/static/vendor/purify-3.4.16.min.js" defer></script>
 </head>
 <body>
     <header>
@@ -73,6 +61,16 @@
             <p id="autoAllStatus" class="sideDrawerNote">Market-close auto-analysis is opt-in per holding.</p>
             <button id="autoAllOnBtn" class="ghost sideDrawerBtn" type="button">Enable for all holdings</button>
             <button id="autoAllOffBtn" class="ghost sideDrawerBtn" type="button">Disable for all holdings</button>
+            <div class="sideDrawerSection">
+                <span class="sideDrawerSectionLabel">Settings</span>
+                <span class="sideDrawerDivider"></span>
+            </div>
+            <button id="modelsBtn" class="ghost sideDrawerBtn" type="button">Models &amp; search</button>
+            <button id="apiAccessBtn" class="ghost sideDrawerBtn" type="button">API access</button>
+            <form method="post" action="/logout" class="sideDrawerForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="ghost sideDrawerBtn" type="submit">Sign out</button>
+            </form>
         </div>
         <div class="sideDrawerFoot">
             <span class="sideDrawerStatus" id="serverState">Connecting...</span>
@@ -333,7 +331,93 @@
         </div>
     </dialog>
 
-    <script>
+    <!-- Models & search settings -->
+    <dialog id="modelsDlg">
+        <div class="modal modal-wide">
+            <header class="dialogHead dialogHead-split">
+                <div>
+                    <strong>Models &amp; search</strong>
+                    <div class="muted">Which LLMs and web-search providers analyses use, and the order they fall back in.</div>
+                </div>
+                <button id="modelsClose" class="ghost closeBtn" type="button" title="Close" aria-label="Close">x</button>
+            </header>
+            <div class="content">
+                <section class="formSection">
+                    <div class="formSectionHead">Analysis models</div>
+                    <p class="muted formHint">Tried top to bottom. If a provider fails mid-analysis (quota, low balance, outage), the next one takes over. <em>Deep</em> runs the research and risk judges; <em>quick</em> runs analysts and debaters.</p>
+                    <div id="llmChainList" class="chainList"></div>
+                    <button id="llmChainAdd" class="ghost" type="button">+ Add fallback</button>
+                </section>
+                <section class="formSection">
+                    <div class="formSectionHead">Web search</div>
+                    <p class="muted formHint">Enabled providers are tried in order. A provider that hits a quota or rate limit is skipped for a while (15 min for rate limits, 6 h for quota or auth errors). If every provider fails, analysts carry on without search.</p>
+                    <div id="searchChainList" class="chainList"></div>
+                    <button id="searchResetBtn" class="ghost" type="button">Clear cooldowns</button>
+                </section>
+                <div id="modelsError" class="formError" hidden></div>
+            </div>
+            <div class="actions">
+                <button class="ghost" id="modelsCancel" type="button">Cancel</button>
+                <button id="modelsSave" class="primary" type="button">Save</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- API tokens -->
+    <dialog id="apiDlg">
+        <div class="modal modal-wide">
+            <header class="dialogHead dialogHead-split">
+                <div>
+                    <strong>API access</strong>
+                    <div class="muted">Tokens let an agent or script read or update this tracker. Send <code>Authorization: Bearer &lt;token&gt;</code>. <code>GET /api/v1</code> lists the endpoints.</div>
+                </div>
+                <button id="apiClose" class="ghost closeBtn" type="button" title="Close" aria-label="Close">x</button>
+            </header>
+            <div class="content">
+                <section class="formSection">
+                    <div class="formSectionHead">New token</div>
+                    <div class="rowgrid rowgrid-three">
+                        <div class="row">
+                            <label for="tokName">Name</label>
+                            <input id="tokName" type="text" maxlength="60" placeholder="e.g. Claude agent" autocomplete="off" />
+                        </div>
+                        <div class="row">
+                            <label for="tokScope">Access</label>
+                            <select id="tokScope">
+                                <option value="read">Read only</option>
+                                <option value="write">Read &amp; write</option>
+                            </select>
+                        </div>
+                        <div class="row">
+                            <label for="tokExpiry">Expires</label>
+                            <select id="tokExpiry">
+                                <option value="30">In 30 days</option>
+                                <option value="90" selected>In 90 days</option>
+                                <option value="365">In 1 year</option>
+                                <option value="">Never</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button id="tokCreate" class="primary" type="button">Create token</button>
+                    <div id="tokReveal" class="tokReveal" hidden></div>
+                </section>
+                <section class="formSection">
+                    <div class="formSectionHead">Active tokens</div>
+                    <div id="tokList" class="tokList"></div>
+                </section>
+                <section class="formSection">
+                    <div class="formSectionHead">Recent changes</div>
+                    <div id="auditList" class="auditList"></div>
+                </section>
+            </div>
+            <div class="actions">
+                <button id="logoutAllBtn" class="danger ghostDanger" type="button">Sign out all browsers</button>
+                <button class="ghost" id="apiDone" type="button">Done</button>
+            </div>
+        </div>
+    </dialog>
+
+    <script nonce="{{ csp_nonce }}">
         (function(){
             var hasServer = location.protocol === 'http:' || location.protocol === 'https:';
             var STATIC_BASE = hasServer ? '/static/' : '../static/';

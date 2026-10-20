@@ -1,9 +1,15 @@
 # server.py
-import os, json, uuid, threading, time, traceback
+import os, json, re, uuid, threading, time, traceback
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
-from flask import Flask, jsonify, request, send_from_directory, render_template, Response, stream_with_context, redirect, url_for
+from flask import Flask, g, jsonify, request, send_from_directory, render_template, Response, stream_with_context, redirect, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 from zoneinfo import ZoneInfo
+
+from server_auth import init_auth, require_admin
+from server_settings import SettingsError, SettingsStore
+from tradingagents.llm_providers import list_remote_models, normalize_chain_entry
+from tradingagents.dataflows.search_provider import reset_cooldown
 
 # Optional deps:
 # - tradingagents: provides analyze() or similar. We'll adapt via a safe wrapper.
@@ -22,8 +28,8 @@ except Exception:
 # Config
 # -------------------
 APP_TZ = ZoneInfo("America/Los_Angeles")  # market-close scheduler
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
+DATA_DIR = os.environ.get("TA_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
 REPORTS_DIR = os.path.join(DATA_DIR, "reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 DATA_FILE = os.path.join(DATA_DIR, "stocks.json")
@@ -72,6 +78,11 @@ UNSET = object()
 # App
 # -------------------
 app = Flask(__name__, static_folder="static", template_folder="templates")
+# nginx terminates TLS and forwards X-Forwarded-For/-Proto (see proxy_params); trust exactly one hop.
+if os.environ.get("TA_TRUST_PROXY", "1") != "0":
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+AUTH = init_auth(app, DATA_DIR)
+SETTINGS = SettingsStore(DATA_DIR, lambda: _get_personal_config_copy())
 
 # -------------------
 # Job queue (in-memory)
@@ -567,42 +578,35 @@ def _normalize_options(raw: Any) -> Dict[str, Any]:
     if date_str:
         normalized["date"] = date_str
 
-    for key in [
-        "llm_provider",
-        "deep_think_llm",
-        "quick_think_llm",
-        "backend_url",
-        "project_dir",
-    ]:
-        value = options.get(key)
-        if value is None:
-            continue
-        if isinstance(value, str):
-            value = value.strip()
-            if not value:
-                continue
-        normalized[key] = value
-
-    config = options.get("config")
-    normalized["config"] = dict(config) if isinstance(config, dict) else {}
+    # Optional per-holding model override. Only a registered provider id and a
+    # model name are accepted: endpoints (backend_url) and arbitrary config keys
+    # are server-side only, so a request can never redirect an API key elsewhere.
+    if options.get("llm_provider"):
+        override = normalize_chain_entry({
+            "provider": options.get("llm_provider"),
+            "deep": options.get("deep_think_llm"),
+            "quick": options.get("quick_think_llm"),
+        }, _get_personal_config_copy())
+        if override:
+            normalized["llm_provider"] = override["provider"]
+            normalized["deep_think_llm"] = override["deep"]
+            normalized["quick_think_llm"] = override["quick"]
     return normalized
+
+def _llm_override(opts: Dict[str, Any]) -> Dict[str, str] | None:
+    if not opts.get("llm_provider"):
+        return None
+    return {"provider": opts["llm_provider"], "deep": opts["deep_think_llm"], "quick": opts["quick_think_llm"]}
 
 def _resolve_analysis_settings(raw_options: Any) -> Dict[str, Any]:
     opts = _normalize_options(raw_options)
     preset = ANALYSIS_PRESETS.get(opts["preset"], ANALYSIS_PRESETS[DEFAULT_ANALYSIS_PRESET])
-    cfg = _get_personal_config_copy()
-
-    if opts.get("config"):
-        cfg.update(opts["config"])
+    cfg = SETTINGS.apply(_get_personal_config_copy(), _llm_override(opts))
 
     cfg["online_tools"] = opts["online_tools"]
     cfg["max_debate_rounds"] = opts["max_debate_rounds"]
     if "max_risk_discuss_rounds" not in cfg:
         cfg["max_risk_discuss_rounds"] = max(1, min(opts["max_debate_rounds"], 4))
-
-    for key in ["llm_provider", "deep_think_llm", "quick_think_llm", "backend_url", "project_dir"]:
-        if key in opts:
-            cfg[key] = opts[key]
 
     return {
         "options": opts,
@@ -668,12 +672,7 @@ def _get_personal_config_copy() -> Dict[str, Any]:
 
 def _get_personal_config_summary() -> Dict[str, Any]:
     cfg = _get_personal_config_copy()
-    return {
-        "llm_provider": cfg.get("llm_provider"),
-        "deep_think_llm": cfg.get("deep_think_llm"),
-        "quick_think_llm": cfg.get("quick_think_llm"),
-        "online_tools": cfg.get("online_tools"),
-    }
+    return {**SETTINGS.summary(), "online_tools": cfg.get("online_tools")}
 
 def _normalize_post_for_client(post: Dict[str, Any]) -> Dict[str, Any]:
     post["options"] = _normalize_options(post.get("options") or {})
@@ -2292,6 +2291,9 @@ def bulk_auto_analyze():
         _write(posts)
     return jsonify({"enabled": enabled, "changed": changed, "accountId": account_id or None})
 
+TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-=^]{0,14}$")
+CHART_PERIODS = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
+CHART_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "4h", "1d", "5d", "1wk", "1mo", "3mo"}
 _CHART_CACHE: Dict[Any, Any] = {}  # (ticker, period, interval) -> (timestamp, payload)
 _CHART_TTL = 60.0  # seconds; the net-worth chart re-fetches every holding on each range click
 
@@ -2305,10 +2307,12 @@ def chart():
     on every click, which is the main source of the visible "freeze" when changing ranges.
     """
     ticker = (request.args.get("ticker") or "").upper().strip()
-    if not ticker:
+    if not TICKER_RE.match(ticker):
         return jsonify({"timestamps": [], "opens": [], "highs": [], "lows": [], "closes": [], "volumes": []})
     period = request.args.get("period") or "6mo"
     interval = request.args.get("interval") or "1d"
+    if period not in CHART_PERIODS or interval not in CHART_INTERVALS:
+        return jsonify({"message": "Unsupported period or interval"}), 400
     key = (ticker, period, interval)
     now = time.time()
     cached = _CHART_CACHE.get(key)
@@ -2323,8 +2327,8 @@ def chart():
 def fundamentals(ticker):
     """Normalized fundamental metrics (yfinance) for a single ticker, cached ~1h."""
     tk = (ticker or "").upper().strip()
-    if not tk:
-        return jsonify({"ticker": "", "metrics": {}, "available": False, "error": "No ticker"})
+    if not TICKER_RE.match(tk):
+        return jsonify({"ticker": "", "metrics": {}, "available": False, "error": "Invalid ticker"})
     force = _coerce_bool(request.args.get("refresh"), False)
     now = time.time()
     cached = _FUND_CACHE.get(tk)
@@ -2335,6 +2339,314 @@ def fundamentals(ticker):
     if data.get("available"):
         _FUND_CACHE[tk] = (now, data)
     return jsonify(data)
+
+# -------------------
+# Analysis settings (LLM chain + search chain)
+# -------------------
+@app.get("/api/settings")
+def get_settings():
+    return jsonify(SETTINGS.describe())
+
+@app.put("/api/settings")
+@require_admin
+def put_settings():
+    payload = request.get_json(silent=True) or {}
+    try:
+        SETTINGS.save(payload)
+    except SettingsError as e:
+        return jsonify({"error": "invalid", "message": str(e)}), 400
+    return jsonify(SETTINGS.describe())
+
+@app.get("/api/settings/models/<provider_id>")
+@require_admin
+def list_provider_models(provider_id):
+    """Live model list from the provider (cached ~10 min)."""
+    try:
+        return jsonify({"provider": provider_id, "models": list_remote_models(provider_id, _get_personal_config_copy())})
+    except Exception as e:
+        return jsonify({"provider": provider_id, "models": [], "error": "provider_error",
+                        "message": f"{type(e).__name__}: {str(e)[:200]}"}), 502
+
+@app.post("/api/settings/search/reset")
+@require_admin
+def reset_search_cooldowns():
+    """Clear search-provider cooldowns (e.g. after topping up a quota)."""
+    payload = request.get_json(silent=True) or {}
+    reset_cooldown(payload.get("provider") or None)
+    return jsonify(SETTINGS.describe())
+
+# -------------------
+# Agent-friendly API (v1): resolve accounts by name and holdings by ticker so a
+# script/agent can record activity without first looking up internal ids.
+# -------------------
+def _account_ledger(account: Dict[str, Any], holdings: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Python port of accountLedger() in static/app.js; keep the two in sync."""
+    events = []
+    for cf in account.get("cashFlows") or []:
+        try:
+            amt = float(cf.get("amount") or 0)
+        except Exception:
+            continue
+        if amt <= 0:
+            continue
+        kind = cf.get("type")
+        kind = ("withdraw" if kind == "withdrawal"
+                else "dividend" if kind in ("dividend", "outside-gain")
+                else "fee" if kind in ("fee", "outside-loss") else "deposit")
+        events.append((str(cf.get("date") or ""), kind, amt))
+    for p in holdings:
+        for t in p.get("transactions") or []:
+            try:
+                shares, price, fee = float(t.get("shares") or 0), float(t.get("price") or 0), float(t.get("fee") or 0)
+            except Exception:
+                continue
+            if t.get("type") not in ("buy", "sell") or shares <= 0:
+                continue
+            gross = shares * price
+            events.append((str(t.get("date") or ""), t["type"], gross + fee if t["type"] == "buy" else gross - fee))
+    events.sort(key=lambda e: e[0])
+    cash = contributions = implied = 0.0
+    for _, kind, amt in events:
+        if kind == "deposit":
+            cash += amt; contributions += amt
+        elif kind == "withdraw":
+            cash -= amt; contributions -= amt
+        elif kind == "buy":
+            if cash < amt - 1e-9:
+                short = amt - cash
+                cash += short; contributions += short; implied += short
+            cash -= amt
+        elif kind == "sell" or kind == "dividend":
+            cash += amt
+        elif kind == "fee":
+            cash -= amt
+    return {"cash": round(cash, 2), "contributions": round(contributions, 2), "impliedDeposits": round(implied, 2)}
+
+def _holding_summary(p: Dict[str, Any]) -> Dict[str, Any]:
+    ticker = (p.get("tickers") or [p.get("ticker")] or [""])[0] or ""
+    pos = _position_from_transactions(p.get("transactions") or [])
+    snap = (p.get("snapshot") or {}).get(ticker) or {}
+    price = snap.get("current")
+    ana = p.get("analysis") or {}
+    rec = ((ana.get("per_ticker") or {}).get(ticker) or {}) if isinstance(ana, dict) else {}
+    entry = _snapshot_entry(pos, price, None)
+    return {
+        "id": p.get("id"),
+        "ticker": ticker,
+        "title": p.get("title"),
+        "note": p.get("note") or "",
+        "shares": pos["shares"],
+        "avgCost": pos["avgCost"],
+        "price": price,
+        "marketValue": entry["marketValue"],
+        "unrealizedPnl": entry["unrealizedPnl"],
+        "unrealizedPct": entry["pct"],
+        "realizedPnl": pos["realizedPnl"],
+        "dayChange": snap.get("dayChange"),
+        "dayChangePct": snap.get("dayChangePct"),
+        "signal": rec.get("suggestion"),
+        "analysisCompletedAt": ana.get("completedAt") if isinstance(ana, dict) else None,
+        "autoAnalyze": bool(p.get("autoAnalyze")),
+        "transactionCount": len(p.get("transactions") or []),
+        "pendingComments": sum(1 for c in (p.get("comments") or []) if c.get("status") == "pending"),
+        "updatedAt": p.get("updatedAt"),
+    }
+
+def _resolve_account(ref: Any, accounts: List[Dict[str, Any]]):
+    """Find an account by id or (case-insensitive) name. Returns (account, error_response)."""
+    ref = str(ref or "").strip()
+    if not ref:
+        if len(accounts) == 1:
+            return accounts[0], None
+        return None, (jsonify({"error": "account_required", "message": "Specify 'account' (id or name).",
+                               "accounts": [a.get("name") for a in accounts]}), 400)
+    for a in accounts:
+        if str(a.get("id")) == ref:
+            return a, None
+    matches = [a for a in accounts if str(a.get("name") or "").strip().lower() == ref.lower()]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, (jsonify({"error": "ambiguous_account", "message": f"Several accounts are named '{ref}'; use the id.",
+                               "accounts": [{"id": a["id"], "name": a.get("name")} for a in matches]}), 409)
+    return None, (jsonify({"error": "account_not_found", "message": f"No account '{ref}'.",
+                           "accounts": [a.get("name") for a in accounts]}), 404)
+
+def _v1_ticker(raw: Any):
+    ticker = str(raw or "").strip().upper()
+    return ticker if TICKER_RE.match(ticker) else None
+
+@app.get("/api/v1")
+def api_v1_index():
+    return jsonify({
+        "auth": "Authorization: Bearer <token>. Read tokens may only GET; write tokens may also POST/PUT/DELETE.",
+        "endpoints": {
+            "GET /api/v1/portfolio[?account=<id|name>][&refresh=1]": "Accounts with cash, totals and per-holding position/P&L/signal. refresh=1 re-fetches prices first (slow).",
+            "GET /api/v1/holdings/<ticker>[?account=]": "One holding with its full transaction and comment history.",
+            "POST /api/v1/trades": "{account, ticker, type: buy|sell, shares, price, date?, fee?, note?, id?} — creates the holding if needed. Repeating a request with the same id is a no-op.",
+            "POST /api/v1/cashflows": "{account, type: deposit|withdrawal|dividend|fee|outside-gain|outside-loss, amount, date?, note?, id?}",
+            "POST /api/v1/comments": "{account, ticker, text} — leave a note on a holding for the owner to accept/discard.",
+            "POST /api/v1/analyze": "{account, ticker} — queue a TradingAgents analysis (uses LLM credits).",
+        },
+        "lowLevel": "The UI's /api/accounts, /api/stocks/<id>/..., /api/queue/... endpoints accept the same token.",
+    })
+
+@app.get("/api/v1/portfolio")
+def api_v1_portfolio():
+    accounts = _ensure_accounts()
+    posts = _read()
+    if _coerce_bool(request.args.get("refresh"), False):
+        for p in posts:
+            p["snapshot"] = _build_holding_snapshot(p)
+            p["updatedAt"] = _utcnow_iso()
+        _write(posts)
+    if request.args.get("account"):
+        acc, err = _resolve_account(request.args.get("account"), accounts)
+        if err:
+            return err
+        accounts = [acc]
+    out = []
+    for acc in accounts:
+        holdings = [p for p in posts if str(p.get("accountId")) == str(acc.get("id"))]
+        rows = [_holding_summary(p) for p in holdings]
+        rows.sort(key=lambda r: -(r["marketValue"] or 0))
+        ledger = _account_ledger(acc, holdings) if acc.get("type") != "watchlist" else None
+        invested = round(sum(r["marketValue"] or 0 for r in rows), 2)
+        totals = {
+            "marketValue": invested,
+            "unrealizedPnl": round(sum(r["unrealizedPnl"] or 0 for r in rows), 2),
+            "dayChange": round(sum(r["dayChange"] or 0 for r in rows), 2),
+        }
+        if ledger:
+            totals["netWorth"] = round(ledger["cash"] + invested, 2)
+            totals["totalReturn"] = round(totals["netWorth"] - ledger["contributions"], 2)
+        out.append({
+            "id": acc.get("id"), "name": acc.get("name"), "type": acc.get("type"),
+            **({"cash": ledger["cash"], "contributions": ledger["contributions"]} if ledger else {}),
+            "totals": totals,
+            "holdings": rows,
+        })
+    return jsonify({"asOf": _utcnow_iso(), "accounts": out})
+
+@app.get("/api/v1/holdings/<ticker>")
+def api_v1_holding(ticker):
+    tk = _v1_ticker(ticker)
+    if not tk:
+        return jsonify({"error": "invalid_ticker"}), 400
+    posts = _read()
+    matches = [p for p in posts if tk in (p.get("tickers") or [])]
+    if request.args.get("account"):
+        acc, err = _resolve_account(request.args.get("account"), _ensure_accounts())
+        if err:
+            return err
+        matches = [p for p in matches if str(p.get("accountId")) == str(acc.get("id"))]
+    if not matches:
+        return jsonify({"error": "not_found", "message": f"No holding for {tk}."}), 404
+    return jsonify([{**_holding_summary(p), "accountId": p.get("accountId"),
+                     "transactions": p.get("transactions") or [], "comments": p.get("comments") or []} for p in matches])
+
+def _find_or_create_holding(posts: List[Dict[str, Any]], acc: Dict[str, Any], ticker: str) -> tuple[Dict[str, Any], bool]:
+    for p in posts:
+        if str(p.get("accountId")) == str(acc["id"]) and ticker in (p.get("tickers") or []):
+            return p, False
+    now = _utcnow_iso()
+    normalized = _normalize_post_for_storage({"ticker": ticker, "accountId": acc["id"]})
+    p = {
+        "id": str(uuid.uuid4()), "createdAt": now, "updatedAt": now,
+        "accountId": acc["id"], "title": ticker, "description": "", "note": "",
+        "ticker": ticker, "tickers": [ticker], "transactions": [],
+        "options": normalized["options"], "purchases": {}, "autoAnalyze": False,
+        "analysis": None, "snapshot": {},
+    }
+    posts.append(p)
+    return p, True
+
+@app.post("/api/v1/trades")
+def api_v1_trade():
+    payload = request.get_json(silent=True) or {}
+    tk = _v1_ticker(payload.get("ticker"))
+    if not tk:
+        return jsonify({"error": "invalid_ticker", "message": "ticker is required."}), 400
+    cleaned = _normalize_transactions([payload])
+    if not cleaned:
+        return jsonify({"error": "invalid_trade", "message": "Need type (buy|sell), shares > 0, price >= 0; date as YYYY-MM-DD."}), 400
+    txn = cleaned[0]
+    with DATA_LOCK:
+        acc, err = _resolve_account(payload.get("account"), _ensure_accounts())
+        if err:
+            return err
+        posts = _read()
+        holding, created = _find_or_create_holding(posts, acc, tk)
+        if payload.get("id") and any(str(t.get("id")) == str(payload["id"]) for t in holding.get("transactions") or []):
+            return jsonify({"duplicate": True, "holding": _holding_summary(holding), "transaction": txn}), 200
+        warning = None
+        if txn["type"] == "sell":
+            held = _position_from_transactions(holding.get("transactions") or [])["shares"]
+            if txn["shares"] > held + 1e-9:
+                warning = f"Selling {txn['shares']} but only {held} held; position floors at 0."
+        holding.setdefault("transactions", []).append(txn)
+        _save_holding_after_txn_change(holding["id"], holding, posts)
+    body = {"createdHolding": created, "holding": _holding_summary(holding), "transaction": txn}
+    if warning:
+        body["warning"] = warning
+    return jsonify(body), 201
+
+@app.post("/api/v1/cashflows")
+def api_v1_cashflow():
+    payload = request.get_json(silent=True) or {}
+    cleaned = _normalize_cashflows([payload])
+    if not cleaned:
+        return jsonify({"error": "invalid_cashflow", "message": "Need type (deposit|withdrawal|dividend|fee|outside-gain|outside-loss) and amount > 0."}), 400
+    flow = cleaned[0]
+    with DATA_LOCK:
+        accounts = _read_accounts()
+        acc, err = _resolve_account(payload.get("account"), accounts)
+        if err:
+            return err
+        if payload.get("id") and any(str(c.get("id")) == str(payload["id"]) for c in acc.get("cashFlows") or []):
+            return jsonify({"duplicate": True, "cashFlow": flow}), 200
+        acc.setdefault("cashFlows", []).append(flow)
+        acc["updatedAt"] = _utcnow_iso()
+        _write_accounts(accounts)
+        holdings = [p for p in _read() if str(p.get("accountId")) == str(acc["id"])]
+    return jsonify({"cashFlow": flow, "account": acc.get("name"), **_account_ledger(acc, holdings)}), 201
+
+def _v1_holding_from_payload(payload: Dict[str, Any]):
+    tk = _v1_ticker(payload.get("ticker"))
+    if not tk:
+        return None, None, (jsonify({"error": "invalid_ticker"}), 400)
+    acc, err = _resolve_account(payload.get("account"), _ensure_accounts())
+    if err:
+        return None, None, err
+    posts = _read()
+    for p in posts:
+        if str(p.get("accountId")) == str(acc["id"]) and tk in (p.get("tickers") or []):
+            return posts, p, None
+    return None, None, (jsonify({"error": "not_found", "message": f"No {tk} holding in '{acc.get('name')}'."}), 404)
+
+@app.post("/api/v1/comments")
+def api_v1_comment():
+    payload = request.get_json(silent=True) or {}
+    with DATA_LOCK:
+        posts, p, err = _v1_holding_from_payload(payload)
+        if err:
+            return err
+        author = (getattr(g, "auth", None) or {}).get("name") or ""
+        cleaned = _normalize_comments([{"text": payload.get("text"), "status": "pending", "author": author}])
+        if not cleaned:
+            return jsonify({"error": "invalid_comment", "message": "text is required."}), 400
+        p.setdefault("comments", []).append(cleaned[0])
+        p["updatedAt"] = _utcnow_iso()
+        _write(posts)
+    return jsonify({"comment": cleaned[0], "holding": _holding_summary(p)}), 201
+
+@app.post("/api/v1/analyze")
+def api_v1_analyze():
+    payload = request.get_json(silent=True) or {}
+    _, p, err = _v1_holding_from_payload(payload)
+    if err:
+        return err
+    return enqueue_post(str(p["id"]))
 
 # -------------------
 # Frontend
@@ -2503,7 +2815,10 @@ if __name__ == "__main__":
     _recover_orphaned_jobs()
     start_regen_thread()
     threading.Thread(target=job_worker_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=5055, debug=True)
+    # Dev server only. Binds to localhost and keeps the Werkzeug debugger off unless
+    # explicitly requested: the debugger console executes arbitrary Python.
+    app.run(host=os.environ.get("TA_DEV_HOST", "127.0.0.1"), port=int(os.environ.get("TA_DEV_PORT", "5055")),
+            debug=os.environ.get("TA_DEV_DEBUG") == "1", use_reloader=False)
 else:
     # Running under gunicorn or other WSGI server — start background threads here
     _ensure_accounts()

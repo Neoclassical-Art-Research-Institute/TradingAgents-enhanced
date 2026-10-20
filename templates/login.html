@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="robots" content="noindex" />
+    <title>Sign in · TA Watch</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png" />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/app.css" />
+    <style>
+        .loginWrap { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+        .loginCard { width: 100%; max-width: 380px; background: var(--surface-strong); border: 1px solid var(--border);
+            border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 28px 24px; }
+        .loginCard h1 { margin: 0 0 4px; font-size: 22px; }
+        .loginCard p { margin: 0 0 18px; }
+        .loginCard input[type=password] { width: 100%; }
+        .loginCard button { width: 100%; margin-top: 14px; }
+        .loginError { background: var(--danger-soft); color: var(--sell); border-radius: var(--radius-sm);
+            padding: 10px 12px; margin-bottom: 14px; font-size: 14px; }
+        .loginCard code { font-size: 12px; word-break: break-all; }
+    </style>
+</head>
+<body>
+<main class="loginWrap">
+    <div class="loginCard">
+        <h1>TA Watch</h1>
+        {% if configured %}
+        <p class="muted">Sign in to view your portfolio.</p>
+        {% if error %}<div class="loginError" role="alert">{{ error }}</div>{% endif %}
+        <form method="post" action="/login">
+            <input type="hidden" name="csrf_token" value="{{ login_csrf }}" />
+            <input type="hidden" name="next" value="{{ next }}" />
+            <div class="row">
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+            </div>
+            <button class="primary" type="submit">Sign in</button>
+        </form>
+        {% else %}
+        <p class="muted">No password has been set yet. On the server, run:</p>
+        <p><code>venv/bin/python manage_server.py set-password</code></p>
+        <p class="muted">then reload this page.</p>
+        {% endif %}
+    </div>
+</main>
+</body>
+</html>

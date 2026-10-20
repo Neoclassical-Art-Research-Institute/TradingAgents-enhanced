@@ -25,7 +25,9 @@ cd ~/projects/TradingAgents-enhanced
 source venv/bin/activate
 python serverStock.py
 ```
-Runs on http://localhost:5055 with Flask dev server (debug mode, do not expose publicly).
+Runs on http://127.0.0.1:5055 with the Flask dev server. For plain-HTTP testing, set
+`TA_COOKIE_SECURE=0` or login cookies won't stick. `TA_DEV_DEBUG=1` turns on the Werkzeug
+debugger. Never use it on a reachable host: its console runs arbitrary Python.
 
 ---
 
@@ -47,22 +49,67 @@ venv/bin/pip install -r requirements.txt
 
 ---
 
+## First-time setup after the security update
+
+The site now requires a login. Set a password **before** restarting the service:
+
+```bash
+venv/bin/python manage_server.py set-password     # at least 10 characters
+sudo systemctl restart stockserver
+```
+
+Without a password, the login page just shows this instruction. Agents use API tokens instead
+of the password. See [API.md](API.md).
+
+```bash
+venv/bin/python manage_server.py token create --name "my agent" --scope write --expires-days 90
+venv/bin/python manage_server.py token list
+venv/bin/python manage_server.py token revoke <id>
+venv/bin/python manage_server.py logout-all       # sign out every browser
+```
+
+Tokens can also be created and revoked in the UI under **Menu → API access**, which also shows
+recent changes from the audit log (`data/audit.log`).
+
+---
+
 ## Configuration
 
-**Main config:** `personal_config.py`  
-**Defaults:** `tradingagents/default_config.py`
+**Models & web search:** UI → **Menu → Models & search**, saved to `data/settings.json`.
+- **Analysis models** is an ordered list. The first entry whose API key is set is the primary.
+  If a call fails (quota, low balance, outage, bad model name), the next entry takes over for
+  that call, even partway through an analysis.
+- **Web search** is an ordered list of DeepSeek Search, Tavily, Google (Gemini grounding) and
+  OpenAI. A provider that hits a rate limit is skipped for 15 min; one with a quota or auth error
+  is skipped for 6 h. "Clear cooldowns" resets that. If every provider fails, analysts continue
+  without search instead of failing.
+- A single holding can override the primary model through the API with `options.llm_provider`,
+  `deep_think_llm` and `quick_think_llm`. The global list stays behind it as fallbacks.
 
-| Setting | Current Value | File |
+**Base config:** `personal_config.py` (used as defaults until settings are saved in the UI)
+**Framework defaults:** `tradingagents/default_config.py`
+**Provider registry (endpoints, key env vars, suggested models):** `tradingagents/llm_providers.py`
+
+| Setting | Value |
+|---|---|
+| Default LLM | DeepSeek `deepseek-flash` (V4.1 Flash) for both roles |
+| Other DeepSeek model | `deepseek-v4-pro` |
+| Default search order | DeepSeek Search → Tavily → Google |
+| Embeddings | Local chromadb MiniLM (`embedding_provider = "local"`), no API calls |
+
+**DeepSeek Search pricing:** free until 2026-11-01 00:00 Beijing time, then $0.75 per 1,000
+successful searches. A full analysis makes roughly 5–10 searches.
+
+### Server environment variables (optional, in `.env`)
+
+| Variable | Default | Purpose |
 |---|---|---|
-| LLM provider | `deepseek` | `personal_config.py` |
-| Deep thinking model | `deepseek-v4-flash` | `personal_config.py` |
-| Quick thinking model | `deepseek-v4-flash` | `personal_config.py` |
-| Embedding provider | OpenAI (fallback) | `default_config.py` |
-| Embedding model | `text-embedding-3-large` | `embedding_providers.py` |
-| Backup LLM | `gpt-4.1` / `gpt-4.1-mini` | `default_config.py` |
-
-**Why two providers?** DeepSeek handles all LLM calls but has no embedding model.
-OpenAI `text-embedding-3-large` is used for vector memory (ChromaDB).
+| `TA_SECRET_KEY` | random, stored in `data/.secret_key` | Signs session cookies |
+| `TA_SESSION_DAYS` | `30` | How long a browser stays signed in |
+| `TA_COOKIE_SECURE` | `1` | Set to `0` only for plain-HTTP testing on a LAN |
+| `TA_TRUST_PROXY` | `1` | Trust nginx's `X-Forwarded-*` headers (one hop) |
+| `TA_DATA_DIR` | `./data` | Data directory (useful for testing) |
+| `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` | none | Enable those LLM providers |
 
 ---
 
@@ -71,10 +118,14 @@ OpenAI `text-embedding-3-large` is used for vector memory (ChromaDB).
 Stored in `.env` (loaded by systemd):
 
 ```
-DEEPSEEK_API_KEY=...
-OPENAI_API_KEY=...
+DEEPSEEK_API_KEY=...   # LLM + DeepSeek Search
+OPENAI_API_KEY=...     # optional LLM fallback / search
+GOOGLE_API_KEY=...     # optional LLM fallback / Google search
+TAVILY_API_KEY=...     # optional search
 FINNHUB_API_KEY=...    # for market data tools
 ```
+
+A provider without a key shows "(no key)" in Models & search and is skipped.
 
 To check which keys are loaded:
 ```bash
@@ -136,12 +187,17 @@ Reports are generated per analysis run. If no analysis has been run yet for a ti
 - **Fix:** Already patched in `summarize_post()`
 
 ### DeepSeek `reasoning_content` error (v4-pro)
-- **Cause:** Reasoning models return hidden chain-of-thought that must be echoed back; LangChain doesn't handle this
-- **Fix:** Use `deepseek-v4-flash` for both roles (current config)
+- **Cause:** Reasoning models return hidden chain-of-thought that must be echoed back; LangChain drops it
+- **Fix:** `ChatDeepSeekFixed` in `tradingagents/llm_providers.py` re-injects it. If v4-pro still fails,
+  keep `deepseek-flash` behind it in the model list and calls will fall back automatically.
 
-### `OPENAI_API_KEY` error even when using DeepSeek
-- **Cause:** Embeddings fall back to OpenAI since DeepSeek has no embedding model
-- **Fix:** Add `OPENAI_API_KEY` to `.env`
+### "Web search unavailable" in reports
+- **Cause:** Every enabled search provider is missing a key, cooling down, or failing
+- **Fix:** Menu → Models & search shows each provider's last error. Top up or add a key, then
+  click "Clear cooldowns".
+
+### Locked out / forgot password
+- Run `venv/bin/python manage_server.py set-password` on the server. No restart is needed.
 
 ---
 

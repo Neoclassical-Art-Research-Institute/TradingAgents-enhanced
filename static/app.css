@@ -2547,3 +2547,50 @@ button.sideDrawerBtn:active { transform: none; }
     .md pre { padding: 12px; font-size: 12px; }
     pre.log { font-size: 12px; }
 }
+/* --- Models & search / API access dialogs */
+.sideDrawerForm { margin: 0; }
+.chainList { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.chainRow {
+    display: grid;
+    grid-template-columns: 90px minmax(120px, 1fr) minmax(120px, 1.2fr) minmax(120px, 1.2fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-strong);
+}
+.chainRow input, .chainRow select { min-width: 0; width: 100%; }
+.chainRank { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.chainRow:first-child .chainRank { color: var(--accent); }
+.chainBtns { display: flex; gap: 4px; }
+.chainBtns .iconBtn { min-height: 32px; padding: 4px 9px; }
+.chainWarn, .chainStatus { grid-column: 1 / -1; font-size: 12px; }
+.chainWarn { color: var(--warning); }
+.chainStatus { overflow-wrap: anywhere; }
+.searchRow { grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) auto; }
+.searchRow.is-off { opacity: 0.6; }
+.searchRow.is-paused .chainStatus { color: var(--warning); }
+.searchToggle { display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+.formError { background: var(--danger-soft); color: var(--sell); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 14px; }
+.tokReveal { margin-top: 12px; padding: 12px; border-radius: var(--radius-sm); background: var(--accent-soft); display: flex; flex-direction: column; gap: 8px; }
+.tokReveal pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.tokSecret { display: flex; gap: 8px; align-items: center; }
+.tokSecret code { flex: 1; min-width: 0; word-break: break-all; font-size: 13px; background: var(--surface-strong); padding: 8px; border-radius: 8px; }
+.tokList, .auditList { display: flex; flex-direction: column; gap: 8px; }
+.tokRow { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.tokMain { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tokMeta { grid-column: 1; font-size: 12px; }
+.tokRow .tokRevoke { grid-column: 2; grid-row: 1 / span 2; }
+.auditRow { display: grid; grid-template-columns: 70px 120px 1fr; gap: 8px; font-size: 13px; }
+.auditRow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) {
+    .chainRow { grid-template-columns: 1fr 1fr; }
+    .chainRank { grid-column: 1 / -1; }
+    .chainRow select.chainProvider { grid-column: 1 / -1; }
+    .chainBtns { grid-column: 1 / -1; justify-content: flex-end; }
+    .searchRow { grid-template-columns: 1fr auto; }
+    .searchRow .searchModel { grid-column: 1 / -1; grid-row: 2; }
+    .auditRow { grid-template-columns: 60px 1fr; }
+    .auditRow .auditWhat { grid-column: 1 / -1; white-space: normal; }
+}

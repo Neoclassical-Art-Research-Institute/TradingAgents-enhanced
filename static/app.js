@@ -1,17 +1,7 @@
 // static/app.js
-// Optional: set window.API_BASE (e.g., via inline script or ?api=) to point to your dedicated stock server.
-// Fallback: same-origin.
-const API_BASE = (function(){
-    try {
-        if (typeof window !== 'undefined') {
-            if (window.API_BASE) return String(window.API_BASE).replace(/\/$/, '');
-            const url = new URL(window.location.href);
-            const qp = url.searchParams.get('api');
-            if (qp) return String(qp).replace(/\/$/, '');
-        }
-    } catch {}
-    return '';
-})();
+// API calls are always same-origin: they carry the session cookie and CSRF token,
+// so the base URL must not be settable from a link (the old ?api= override).
+const API_BASE = '';
 const HERO_DISMISSED_KEY = 'stock:heroDismissed';
 const CHART_PREFS_KEY = 'stock:chartPrefs';
 const DEFAULT_CHART_PREFS = {
@@ -728,10 +718,23 @@ function showToast(message, opts = {}) {
 }
 
 // --- API
-async function api(path, opts) {
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
+
+async function api(path, opts = {}) {
     const url = /^https?:/i.test(path) ? path : (API_BASE + path);
-    const r = await fetch(url, opts);
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    const method = String(opts.method || 'GET').toUpperCase();
+    const headers = { ...(opts.headers || {}) };
+    if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = CSRF_TOKEN;
+    const r = await fetch(url, { ...opts, headers, credentials: 'same-origin' });
+    if (r.status === 401) {
+        // Session expired or signed out elsewhere: go back through the login page.
+        location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+        throw new Error('Signed out');
+    }
+    if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        throw new Error(body?.message || `${r.status} ${r.statusText}`);
+    }
     return r.json();
 }
 
@@ -4696,3 +4699,319 @@ window.addEventListener('resize', () => {
 function escapeHtml(s) {
     return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
+
+// --- Models & search settings dialog
+const MODELS = { catalog: [], search: [], llm: [], searchModels: {}, liveModels: {} };
+const modelsEl = (id) => document.getElementById(id);
+
+function providerById(pid) { return MODELS.catalog.find((p) => p.id === pid) || null; }
+
+function modelDatalistId(pid) { return `dl-models-${pid}`; }
+
+function syncModelDatalists() {
+    let host = modelsEl('modelDatalists');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'modelDatalists';
+        host.hidden = true;
+        document.body.appendChild(host);
+    }
+    host.innerHTML = MODELS.catalog.map((p) => {
+        const names = Array.from(new Set([...(p.models || []), ...(MODELS.liveModels[p.id] || [])]));
+        return `<datalist id="${escapeHtml(modelDatalistId(p.id))}">${names.map((n) => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
+    }).join('');
+}
+
+function searchStatusText(sp) {
+    if (!sp.available) return `No API key — set ${sp.apiKeyEnv} in .env`;
+    const st = sp.status || {};
+    if (st.coolingDown) {
+        const until = new Date(st.cooldownUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        return `Paused until ${until} (${st.lastErrorKind || 'error'}): ${st.lastError || ''}`;
+    }
+    if (st.lastErrorAt && (!st.lastSuccessAt || st.lastErrorAt > st.lastSuccessAt)) return `Last error ${formatRelativeTime(st.lastErrorAt)}: ${st.lastError || ''}`;
+    if (st.lastSuccessAt) return `Working · last used ${formatRelativeTime(st.lastSuccessAt)} · ${st.successes || 0} ok / ${st.failures || 0} failed since restart`;
+    return 'Not used since restart';
+}
+
+function renderLlmChain() {
+    const host = modelsEl('llmChainList');
+    if (!host) return;
+    host.innerHTML = MODELS.llm.map((e, i) => {
+        const opts = MODELS.catalog.map((p) =>
+            `<option value="${escapeHtml(p.id)}"${p.id === e.provider ? ' selected' : ''}>${escapeHtml(p.label)}${p.available ? '' : ' (no key)'}</option>`).join('');
+        const prov = providerById(e.provider);
+        const warn = prov && !prov.available ? `<div class="chainWarn">No API key — set ${escapeHtml(prov.apiKeyEnv || '')} in .env, or this entry is skipped.</div>` : '';
+        const dl = escapeHtml(modelDatalistId(e.provider));
+        return `<div class="chainRow" data-idx="${i}">
+            <span class="chainRank">${i === 0 ? 'Primary' : `Fallback ${i}`}</span>
+            <select class="chainProvider" aria-label="Provider">${opts}</select>
+            <input class="chainDeep" list="${dl}" value="${escapeHtml(e.deep)}" placeholder="deep model" aria-label="Deep model" autocomplete="off" spellcheck="false" />
+            <input class="chainQuick" list="${dl}" value="${escapeHtml(e.quick)}" placeholder="quick model" aria-label="Quick model" autocomplete="off" spellcheck="false" />
+            <span class="chainBtns">
+                <button class="ghost iconBtn chainFetch" type="button" title="Load the provider's current model list" aria-label="Load models"${prov?.available ? '' : ' disabled'}>↻</button>
+                <button class="ghost iconBtn chainUp" type="button" title="Move up" aria-label="Move up"${i === 0 ? ' disabled' : ''}>↑</button>
+                <button class="ghost iconBtn chainDown" type="button" title="Move down" aria-label="Move down"${i === MODELS.llm.length - 1 ? ' disabled' : ''}>↓</button>
+                <button class="ghost iconBtn chainRemove" type="button" title="Remove" aria-label="Remove"${MODELS.llm.length === 1 ? ' disabled' : ''}>✕</button>
+            </span>
+            ${warn}
+        </div>`;
+    }).join('');
+}
+
+function renderSearchChain() {
+    const host = modelsEl('searchChainList');
+    if (!host) return;
+    host.innerHTML = MODELS.search.map((row, i) => {
+        const sp = row.meta;
+        const st = sp.status || {};
+        const cls = !sp.available ? 'is-off' : st.coolingDown ? 'is-paused' : '';
+        const model = sp.usesModel
+            ? `<input class="searchModel" value="${escapeHtml(MODELS.searchModels[sp.id] || sp.defaultModel)}" aria-label="${escapeHtml(sp.label)} model" placeholder="${escapeHtml(sp.defaultModel)}" autocomplete="off" spellcheck="false" />`
+            : '';
+        return `<div class="chainRow searchRow ${cls}" data-idx="${i}">
+            <label class="searchToggle"><input type="checkbox" class="searchEnabled"${row.enabled ? ' checked' : ''} /> <strong>${escapeHtml(sp.label)}</strong></label>
+            ${model}
+            <span class="chainBtns">
+                <button class="ghost iconBtn searchUp" type="button" aria-label="Move up"${i === 0 ? ' disabled' : ''}>↑</button>
+                <button class="ghost iconBtn searchDown" type="button" aria-label="Move down"${i === MODELS.search.length - 1 ? ' disabled' : ''}>↓</button>
+            </span>
+            <div class="chainStatus muted">${escapeHtml(searchStatusText(sp))}</div>
+        </div>`;
+    }).join('');
+}
+
+function readModelsForm() {
+    document.querySelectorAll('#llmChainList .chainRow').forEach((row) => {
+        const e = MODELS.llm[Number(row.dataset.idx)];
+        if (!e) return;
+        e.provider = row.querySelector('.chainProvider').value;
+        e.deep = row.querySelector('.chainDeep').value.trim();
+        e.quick = row.querySelector('.chainQuick').value.trim();
+    });
+    document.querySelectorAll('#searchChainList .searchRow').forEach((row) => {
+        const r = MODELS.search[Number(row.dataset.idx)];
+        if (!r) return;
+        r.enabled = row.querySelector('.searchEnabled').checked;
+        const m = row.querySelector('.searchModel');
+        if (m) MODELS.searchModels[r.meta.id] = m.value.trim();
+    });
+}
+
+function applyModelsPayload(j) {
+    MODELS.catalog = j.llmProviders || [];
+    MODELS.llm = (j.settings?.llm_chain || []).map((e) => ({ ...e }));
+    MODELS.searchModels = { ...(j.settings?.search_models || {}) };
+    const enabled = j.settings?.search_chain || [];
+    const metas = j.searchProviders || [];
+    MODELS.search = [
+        ...enabled.map((id) => metas.find((m) => m.id === id)).filter(Boolean).map((meta) => ({ meta, enabled: true })),
+        ...metas.filter((m) => !enabled.includes(m.id)).map((meta) => ({ meta, enabled: false })),
+    ];
+    syncModelDatalists();
+    renderLlmChain();
+    renderSearchChain();
+}
+
+function showModelsError(msg) {
+    const el = modelsEl('modelsError');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.hidden = !msg;
+}
+
+async function openModelsDlg() {
+    closeDrawer();
+    showModelsError('');
+    try {
+        applyModelsPayload(await api('/api/settings'));
+    } catch (e) { showToast(`Failed to load settings: ${e.message || e}`); return; }
+    modelsEl('modelsDlg').showModal();
+}
+
+async function saveModels() {
+    readModelsForm();
+    showModelsError('');
+    const btn = modelsEl('modelsSave');
+    btn.disabled = true;
+    try {
+        const j = await api('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                llm_chain: MODELS.llm,
+                search_chain: MODELS.search.filter((r) => r.enabled).map((r) => r.meta.id),
+                search_models: MODELS.searchModels,
+            }),
+        });
+        applyModelsPayload(j);
+        await loadConfig();
+        modelsEl('modelsDlg').close();
+        showToast('Settings saved. New analyses will use them.');
+    } catch (e) {
+        showModelsError(e.message || String(e));
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+modelsEl('llmChainList')?.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button');
+    const row = ev.target.closest('.chainRow');
+    if (!btn || !row) return;
+    readModelsForm();
+    const i = Number(row.dataset.idx);
+    const list = MODELS.llm;
+    if (btn.classList.contains('chainUp') && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
+    else if (btn.classList.contains('chainDown') && i < list.length - 1) [list[i + 1], list[i]] = [list[i], list[i + 1]];
+    else if (btn.classList.contains('chainRemove') && list.length > 1) list.splice(i, 1);
+    else if (btn.classList.contains('chainFetch')) {
+        const pid = list[i].provider;
+        btn.disabled = true;
+        try {
+            const j = await api(`/api/settings/models/${encodeURIComponent(pid)}`);
+            MODELS.liveModels[pid] = j.models || [];
+            syncModelDatalists();
+            showToast(`${(j.models || []).length} models available from ${providerById(pid)?.label || pid}.`);
+        } catch (e) { showToast(`Could not list models: ${e.message || e}`); }
+        btn.disabled = false;
+        return;
+    }
+    renderLlmChain();
+});
+modelsEl('llmChainList')?.addEventListener('change', (ev) => {
+    if (!ev.target.classList.contains('chainProvider')) return;
+    // Switching provider: reset models to that provider's defaults.
+    const row = ev.target.closest('.chainRow');
+    readModelsForm();
+    const e = MODELS.llm[Number(row.dataset.idx)];
+    const p = providerById(e.provider);
+    e.deep = p?.defaultDeep || '';
+    e.quick = p?.defaultQuick || '';
+    renderLlmChain();
+});
+modelsEl('llmChainAdd')?.addEventListener('click', () => {
+    readModelsForm();
+    if (MODELS.llm.length >= 6) { showToast('At most 6 entries.'); return; }
+    const used = new Set(MODELS.llm.map((e) => e.provider));
+    const next = MODELS.catalog.find((p) => p.available && !used.has(p.id)) || MODELS.catalog[0];
+    MODELS.llm.push({ provider: next.id, deep: next.defaultDeep, quick: next.defaultQuick });
+    renderLlmChain();
+});
+modelsEl('searchChainList')?.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button');
+    const row = ev.target.closest('.searchRow');
+    if (!btn || !row) return;
+    readModelsForm();
+    const i = Number(row.dataset.idx);
+    const list = MODELS.search;
+    if (btn.classList.contains('searchUp') && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
+    else if (btn.classList.contains('searchDown') && i < list.length - 1) [list[i + 1], list[i]] = [list[i], list[i + 1]];
+    renderSearchChain();
+});
+modelsEl('searchResetBtn')?.addEventListener('click', async () => {
+    readModelsForm();
+    try {
+        const j = await api('/api/settings/search/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        // Keep unsaved edits; only refresh provider status.
+        MODELS.search.forEach((r) => { r.meta = (j.searchProviders || []).find((m) => m.id === r.meta.id) || r.meta; });
+        renderSearchChain();
+        showToast('Search cooldowns cleared.');
+    } catch (e) { showToast(`Failed: ${e.message || e}`); }
+});
+modelsEl('modelsBtn')?.addEventListener('click', openModelsDlg);
+modelsEl('modelsSave')?.addEventListener('click', saveModels);
+modelsEl('modelsCancel')?.addEventListener('click', () => modelsEl('modelsDlg').close());
+modelsEl('modelsClose')?.addEventListener('click', () => modelsEl('modelsDlg').close());
+
+// --- API access (tokens) dialog
+function renderTokens(tokens) {
+    const host = modelsEl('tokList');
+    if (!host) return;
+    if (!tokens.length) { host.innerHTML = '<div class="muted">No tokens yet.</div>'; return; }
+    host.innerHTML = tokens.map((t) => {
+        const expired = t.expiresAt && new Date(t.expiresAt) < new Date();
+        const expiry = t.expiresAt ? `${expired ? 'expired' : 'expires'} ${formatDateTime(t.expiresAt)}` : 'never expires';
+        return `<div class="tokRow">
+            <div class="tokMain">
+                <strong>${escapeHtml(t.name)}</strong>
+                <span class="pill">${t.scope === 'write' ? 'read & write' : 'read only'}</span>
+                <code class="muted">${escapeHtml(t.hint)}…</code>
+            </div>
+            <div class="muted tokMeta">Created ${escapeHtml(formatDateTime(t.createdAt))} · last used ${escapeHtml(t.lastUsedAt ? formatRelativeTime(t.lastUsedAt) : 'never')} · ${escapeHtml(expiry)}</div>
+            <button class="ghost ghostDanger tokRevoke" type="button" data-id="${escapeHtml(t.id)}">Revoke</button>
+        </div>`;
+    }).join('');
+}
+
+function renderAudit(entries) {
+    const host = modelsEl('auditList');
+    if (!host) return;
+    if (!entries.length) { host.innerHTML = '<div class="muted">Nothing yet.</div>'; return; }
+    host.innerHTML = entries.slice(0, 25).map((e) => {
+        const what = e.event === 'request' ? `${e.method} ${e.path} → ${e.status}`
+            : e.event === 'token_created' ? `created token “${e.token}” (${e.scope})`
+            : e.event.replace(/_/g, ' ');
+        return `<div class="auditRow"><span class="muted">${escapeHtml(formatRelativeTime(e.ts))}</span><span>${escapeHtml(e.actor || e.ip || '')}</span><span class="auditWhat">${escapeHtml(what)}</span></div>`;
+    }).join('');
+}
+
+async function refreshApiDlg() {
+    const [tokens, audit] = await Promise.all([api('/api/auth/tokens'), api('/api/audit?limit=50')]);
+    renderTokens(tokens);
+    renderAudit(audit);
+}
+
+async function openApiDlg() {
+    closeDrawer();
+    const reveal = modelsEl('tokReveal');
+    if (reveal) { reveal.hidden = true; reveal.innerHTML = ''; }
+    try { await refreshApiDlg(); } catch (e) { showToast(`Failed: ${e.message || e}`); return; }
+    modelsEl('apiDlg').showModal();
+}
+
+async function createToken() {
+    const name = modelsEl('tokName').value.trim();
+    if (!name) { showToast('Give the token a name.'); return; }
+    const btn = modelsEl('tokCreate');
+    btn.disabled = true;
+    try {
+        const t = await api('/api/auth/tokens', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, scope: modelsEl('tokScope').value, expiresInDays: modelsEl('tokExpiry').value || null }),
+        });
+        const example = `curl -H "Authorization: Bearer ${t.token}" ${location.origin}/api/v1/portfolio`;
+        const reveal = modelsEl('tokReveal');
+        reveal.innerHTML = `<div><strong>Copy this token now.</strong> It won't be shown again.</div>
+            <div class="tokSecret"><code id="tokSecret">${escapeHtml(t.token)}</code><button class="ghost" type="button" id="tokCopy">Copy</button></div>
+            <div class="muted">Try it:</div><pre class="log">${escapeHtml(example)}</pre>`;
+        reveal.hidden = false;
+        modelsEl('tokCopy')?.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(t.token); showToast('Copied.'); } catch { showToast('Copy failed — select the text instead.'); }
+        });
+        modelsEl('tokName').value = '';
+        await refreshApiDlg();
+    } catch (e) { showToast(`Failed: ${e.message || e}`); }
+    btn.disabled = false;
+}
+
+modelsEl('apiAccessBtn')?.addEventListener('click', openApiDlg);
+modelsEl('tokCreate')?.addEventListener('click', createToken);
+modelsEl('tokList')?.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('.tokRevoke');
+    if (!btn) return;
+    if (!confirm('Revoke this token? Anything using it will stop working immediately.')) return;
+    try {
+        await api(`/api/auth/tokens/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' });
+        await refreshApiDlg();
+        showToast('Token revoked.');
+    } catch (e) { showToast(`Failed: ${e.message || e}`); }
+});
+modelsEl('logoutAllBtn')?.addEventListener('click', async () => {
+    if (!confirm('Sign out every browser, including this one? API tokens keep working.')) return;
+    try { await api('/api/auth/logout-all', { method: 'POST' }); } catch {}
+    location.href = '/login';
+});
+modelsEl('apiDone')?.addEventListener('click', () => modelsEl('apiDlg').close());
+modelsEl('apiClose')?.addEventListener('click', () => modelsEl('apiDlg').close());

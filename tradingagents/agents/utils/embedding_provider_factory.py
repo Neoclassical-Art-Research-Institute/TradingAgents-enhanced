@@ -10,6 +10,10 @@ from .embedding_providers import (
 class EmbeddingProviderFactory:
     @staticmethod
     def create_provider(config : dict[str, any])->EmbeddingProvider:
+        # Explicit override: fully local embeddings regardless of the LLM provider.
+        if config.get("embedding_provider") == "local":
+            return LocalEmbeddingProvider()
+
         backend_url = config["backend_url"]
 
         if  "deepseek" in backend_url: # Deepseek does not currently have its own embedding model, Lets just use backup for now

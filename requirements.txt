@@ -27,4 +27,6 @@ langchain-google-genai
 google-genai
 langchain-deepseek
 tavily-python
-deepseekflask>=3.0.0
+Flask>=3.0.0
+httpx
+gunicorn

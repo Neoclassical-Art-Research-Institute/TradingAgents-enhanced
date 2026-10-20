@@ -15,6 +15,7 @@ import yfinance as yf
 from openai import OpenAI
 from .config import get_config, set_config, DATA_DIR
 from .search_provider_factory import SearchProviderFactory
+from .search_provider import date_window
 
 
 
@@ -321,7 +322,13 @@ def get_reddit_company_news(
 
     query = f'site:reddit.com "{ticker}" stock discussions after:{start_date_obj.strftime("%Y-%m-%d")} before:{end_date.strftime("%Y-%m-%d")}'
 
-    search_results = search_provider.search(query)
+    search_results = search_provider.search(
+        query,
+        keywords=f"{ticker} stock discussion",
+        start_date=start_date_obj.strftime("%Y-%m-%d"),
+        end_date=end_date.strftime("%Y-%m-%d"),
+        site="reddit.com",
+    )
 
     if not search_results or search_results == "":
         return f"No Reddit discussions found for {ticker} from {start_date_obj.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}."
@@ -616,7 +623,8 @@ def get_stock_news(ticker, curr_date):
     config = get_config()
     search_provider = SearchProviderFactory.create_provider(config)
     query = f"Search for the latest news, developments, and announcements for {ticker} from 7 days before {curr_date} to {curr_date}. Focus on earnings, product launches, partnerships, and any market-moving information."
-    return search_provider.search(query)
+    start, end = date_window(curr_date, 7)
+    return search_provider.search(query, keywords=f"{ticker} stock news earnings announcement", start_date=start, end_date=end)
 
 
 def get_twitter_stock_info(
@@ -642,7 +650,13 @@ def get_twitter_stock_info(
     # Using x.com for twitter
     query = f'site:x.com "${ticker}" stock discussions after:{start_date_obj.strftime("%Y-%m-%d")} before:{end_date.strftime("%Y-%m-%d")}'
 
-    search_results = search_provider.search(query)
+    search_results = search_provider.search(
+        query,
+        keywords=f"${ticker} stock",
+        start_date=start_date_obj.strftime("%Y-%m-%d"),
+        end_date=end_date.strftime("%Y-%m-%d"),
+        site="x.com",
+    )
 
     if not search_results or search_results == "":
         return f"No Twitter/X discussions found for {ticker} from {start_date_obj.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}."
@@ -655,7 +669,8 @@ def get_global_news(curr_date):
     config = get_config()
     search_provider = SearchProviderFactory.create_provider(config)
     query = f"Search for global macroeconomic news and financial market updates from 7 days before {curr_date} to {curr_date}. Focus on central bank decisions, economic indicators, geopolitical events, and market-moving news that would be important for trading decisions."
-    return search_provider.search(query)
+    start, end = date_window(curr_date, 7)
+    return search_provider.search(query, keywords="stock market macro news central bank economic data", start_date=start, end_date=end)
     
   
 
@@ -663,5 +678,6 @@ def get_fundamentals(ticker, curr_date):
     config = get_config()
     search_provider = SearchProviderFactory.create_provider(config)
     query = f"Provide a summary of the fundamental analysis for {ticker} stock, using data from the month before {curr_date} up to {curr_date}. The summary should include key financial metrics such as P/E ratio, P/S ratio, cash flow, revenue growth, and a synopsis of recent analyst ratings. Present the key metrics in a structured Markdown table."
-    return search_provider.search(query)
+    start, end = date_window(curr_date, 31)
+    return search_provider.search(query, keywords=f"{ticker} fundamentals P/E revenue growth cash flow analyst ratings", start_date=start, end_date=end)
     

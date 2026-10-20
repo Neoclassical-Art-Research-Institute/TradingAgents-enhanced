@@ -6,45 +6,7 @@ import json
 from datetime import date
 from typing import Dict, Any, Tuple, List, Optional
 
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_deepseek import ChatDeepSeek
-from langchain_core.language_models import LanguageModelInput
-
-
-class ChatDeepSeekFixed(ChatDeepSeek):
-    """Patched ChatDeepSeek that re-injects reasoning_content into the API payload.
-
-    DeepSeek thinking models (e.g. deepseek-v4-flash) return reasoning_content in
-    responses. In multi-turn conversations, the DeepSeek API requires that field to
-    be passed back verbatim in the assistant message. LangChain's base OpenAI message
-    converter silently drops it, causing:
-        'The reasoning_content in the thinking mode must be passed back to the API.'
-    """
-
-    def _get_request_payload(
-        self,
-        input_: LanguageModelInput,
-        *,
-        stop=None,
-        **kwargs,
-    ) -> dict:
-        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        try:
-            original_messages = self._convert_input(input_).to_messages()
-            payload_msgs = payload["messages"]
-            # Walk both lists in lock-step and re-inject reasoning_content
-            for orig_msg, payload_msg in zip(original_messages, payload_msgs):
-                if payload_msg.get("role") == "assistant":
-                    rc = getattr(orig_msg, "additional_kwargs", {}).get(
-                        "reasoning_content"
-                    )
-                    if rc:
-                        payload_msg["reasoning_content"] = rc
-        except Exception:
-            pass
-        return payload
+from tradingagents.llm_providers import ChatDeepSeekFixed, build_llms  # noqa: F401 (ChatDeepSeekFixed re-exported)
 
 from langgraph.prebuilt import ToolNode
 
@@ -93,22 +55,9 @@ class TradingAgentsGraph:
             exist_ok=True,
         )
 
-        # Initialize LLMs
-        if self.config["llm_provider"].lower() == "openai" or self.config["llm_provider"] == "ollama" or self.config["llm_provider"] == "openrouter":
-            self.deep_thinking_llm = ChatOpenAI(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatOpenAI(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "anthropic":
-            self.deep_thinking_llm = ChatAnthropic(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatAnthropic(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "google":
-            self.deep_thinking_llm = ChatGoogleGenerativeAI(model=self.config["deep_think_llm"])
-            self.quick_thinking_llm = ChatGoogleGenerativeAI(model=self.config["quick_think_llm"])
-        elif self.config["llm_provider"].lower() == "deepseek":
-            self.deep_thinking_llm = ChatDeepSeekFixed(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatDeepSeekFixed(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
-        
+        # Initialize LLMs: primary provider plus ordered fallbacks (see llm_providers.py)
+        self.deep_thinking_llm, self.quick_thinking_llm, self.llm_chain = build_llms(self.config)
+
         self.toolkit = Toolkit(config=self.config)
 
         # Initialize memories

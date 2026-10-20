@@ -23,6 +23,8 @@ DEFAULT_CONFIG = {
     # "backup_local" uses chromadb's bundled ONNX MiniLM (fully local, no API calls);
     # "backup_openai" / "backup_google" route embedding calls to those providers.
     "default_backup": "backup_openai",
+    # "local" forces chromadb's bundled embedding model regardless of LLM provider.
+    "embedding_provider": "auto",
     # Search provider override: "auto" picks Google/OpenAI search based on backend_url,
     # "tavily" always uses Tavily Search (requires TAVILY_API_KEY env var), or "none" to
     # skip web search entirely (news/social/fundamentals analysts get an instant "search
