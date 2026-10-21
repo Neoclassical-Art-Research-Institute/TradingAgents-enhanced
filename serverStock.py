@@ -7,6 +7,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from zoneinfo import ZoneInfo
 
 from server_auth import init_auth, require_admin
+from server_openapi import build_spec as build_openapi_spec
 from server_settings import SettingsError, SettingsStore
 from tradingagents.llm_providers import list_remote_models, normalize_chain_entry
 from tradingagents.dataflows.search_provider import reset_cooldown
@@ -1459,11 +1460,40 @@ def api_config():
         "configSummary": _get_personal_config_summary(),
     })
 
+def _slim_post_for_list(post: Dict[str, Any]) -> Dict[str, Any]:
+    """List-view copy of a holding without the bulky analysis text.
+
+    Inlining every report made /api/stocks ~5.7 MB, too slow for a phone on
+    mobile data. The list only needs each ticker's Buy/Hold/Sell; the detail view
+    fetches /api/stocks/<id> for the full report.
+    """
+    post["options"] = _normalize_options(post.get("options") or {})
+    ana = post.get("analysis")
+    if isinstance(ana, dict):
+        slim = {k: v for k, v in ana.items() if k not in ("report", "per_ticker")}
+        slim["report"] = ""
+        slim["reportOmitted"] = True
+        slim["per_ticker"] = {}
+        for tk, rec in (ana.get("per_ticker") or {}).items():
+            rec = rec or {}
+            entry = {"suggestion": rec.get("suggestion")}
+            err = (rec.get("signals") or {}).get("error")
+            if err:
+                entry["signals"] = {"error": err}
+            slim["per_ticker"][tk] = entry
+        post["analysis"] = slim
+    return post
+
 @app.get("/api/stocks")
 def list_posts():
+    """All holdings. Pass ?full=1 to include each full report and signal text."""
     posts = _read()
+    full = _coerce_bool(request.args.get("full"), False)
     for p in posts:
-        _normalize_post_for_client(p)
+        if full:
+            _normalize_post_for_client(p)
+        else:
+            _slim_post_for_list(p)
     return jsonify(posts)
 
 @app.get("/api/stocks/<pid>")
@@ -2381,7 +2411,11 @@ def reset_search_cooldowns():
 # script/agent can record activity without first looking up internal ids.
 # -------------------
 def _account_ledger(account: Dict[str, Any], holdings: List[Dict[str, Any]]) -> Dict[str, float]:
-    """Python port of accountLedger() in static/app.js; keep the two in sync."""
+    """Python port of accountLedger() in static/app.js; keep the two in sync.
+
+    Cash may go negative (margin / instant buying power): buys are never funded
+    with invented deposits, so cash and net worth match the broker's numbers.
+    """
     events = []
     for cf in account.get("cashFlows") or []:
         try:
@@ -2406,22 +2440,19 @@ def _account_ledger(account: Dict[str, Any], holdings: List[Dict[str, Any]]) -> 
             gross = shares * price
             events.append((str(t.get("date") or ""), t["type"], gross + fee if t["type"] == "buy" else gross - fee))
     events.sort(key=lambda e: e[0])
-    cash = contributions = implied = 0.0
+    cash = contributions = 0.0
     for _, kind, amt in events:
         if kind == "deposit":
             cash += amt; contributions += amt
         elif kind == "withdraw":
             cash -= amt; contributions -= amt
         elif kind == "buy":
-            if cash < amt - 1e-9:
-                short = amt - cash
-                cash += short; contributions += short; implied += short
             cash -= amt
         elif kind == "sell" or kind == "dividend":
             cash += amt
         elif kind == "fee":
             cash -= amt
-    return {"cash": round(cash, 2), "contributions": round(contributions, 2), "impliedDeposits": round(implied, 2)}
+    return {"cash": round(cash, 2), "contributions": round(contributions, 2)}
 
 def _holding_summary(p: Dict[str, Any]) -> Dict[str, Any]:
     ticker = (p.get("tickers") or [p.get("ticker")] or [""])[0] or ""
@@ -2477,20 +2508,73 @@ def _v1_ticker(raw: Any):
     ticker = str(raw or "").strip().upper()
     return ticker if TICKER_RE.match(ticker) else None
 
-@app.get("/api/v1")
+def _caller_access() -> Dict[str, Any]:
+    auth = getattr(g, "auth", None) or {}
+    kind = auth.get("kind")
+    scope = auth.get("scope")
+    can_write = scope in ("write", "admin")
+    if kind == "token":
+        who = f"API token '{auth.get('name')}' ({scope} scope)"
+    elif kind == "session":
+        who = "signed-in browser"
+    else:
+        who = "anonymous visitor (public read-only view)"
+    return {"as": who, "canRead": True, "canWrite": can_write,
+            **({} if can_write else {"howToWrite": "Send 'Authorization: Bearer <token>' with a write-scope token."})}
+
+@app.get("/api/v1", strict_slashes=False)
+@app.get("/api/v1/docs")
+@app.get("/api/docs")
 def api_v1_index():
     return jsonify({
+        "you": _caller_access(),
+        "openapi": "/api/v1/openapi.json",
         "auth": "Authorization: Bearer <token>. Read tokens may only GET; write tokens may also POST/PUT/DELETE.",
         "endpoints": {
-            "GET /api/v1/portfolio[?account=<id|name>][&refresh=1]": "Accounts with cash, totals and per-holding position/P&L/signal. refresh=1 re-fetches prices first (slow).",
+            "GET /api/v1/portfolio[?account=<id|name>][&refresh=1]": "Accounts with cash, totals and per-holding position/P&L/signal. refresh=1 re-fetches prices first (slow, write access only).",
+            "GET /api/v1/accounts": "Accounts with id, name, type and cash.",
+            "GET /api/v1/holdings[?account=]": "Flat list of all holdings.",
             "GET /api/v1/holdings/<ticker>[?account=]": "One holding with its full transaction and comment history.",
-            "POST /api/v1/trades": "{account, ticker, type: buy|sell, shares, price, date?, fee?, note?, id?} — creates the holding if needed. Repeating a request with the same id is a no-op.",
+            "POST /api/v1/trades": "{account, ticker, type: buy|sell, shares, price, date?, fee?, note?, id?}. Creates the holding if needed. Repeating a request with the same id is a no-op. Alias: POST /api/v1/transactions.",
             "POST /api/v1/cashflows": "{account, type: deposit|withdrawal|dividend|fee|outside-gain|outside-loss, amount, date?, note?, id?}",
-            "POST /api/v1/comments": "{account, ticker, text} — leave a note on a holding for the owner to accept/discard.",
-            "POST /api/v1/analyze": "{account, ticker} — queue a TradingAgents analysis (uses LLM credits).",
+            "POST /api/v1/comments": "{account, ticker, text}: leave a note on a holding for the owner to accept/discard.",
+            "POST /api/v1/analyze": "{account, ticker}: queue a TradingAgents analysis (uses LLM credits).",
         },
         "lowLevel": "The UI's /api/accounts, /api/stocks/<id>/..., /api/queue/... endpoints accept the same token.",
     })
+
+@app.get("/api/v1/openapi.json")
+@app.get("/api/v1/schema")
+@app.get("/api/openapi.json")
+def api_v1_openapi():
+    return jsonify(build_openapi_spec(request.host_url))
+
+@app.get("/api/v1/accounts")
+def api_v1_accounts():
+    accounts = _ensure_accounts()
+    posts = _read()
+    out = []
+    for acc in accounts:
+        holdings = [p for p in posts if str(p.get("accountId")) == str(acc.get("id"))]
+        row = {"id": acc.get("id"), "name": acc.get("name"), "type": acc.get("type"), "holdings": len(holdings)}
+        if acc.get("type") != "watchlist":
+            ledger = _account_ledger(acc, holdings)
+            row.update({"cash": ledger["cash"], "contributions": ledger["contributions"]})
+        out.append(row)
+    return jsonify(out)
+
+@app.get("/api/v1/holdings", strict_slashes=False)
+def api_v1_holdings():
+    posts = _read()
+    if request.args.get("account"):
+        acc, err = _resolve_account(request.args.get("account"), _ensure_accounts())
+        if err:
+            return err
+        posts = [p for p in posts if str(p.get("accountId")) == str(acc.get("id"))]
+    names = {str(a.get("id")): a.get("name") for a in _ensure_accounts()}
+    rows = [{**_holding_summary(p), "accountId": p.get("accountId"), "account": names.get(str(p.get("accountId")))} for p in posts]
+    rows.sort(key=lambda r: -(r["marketValue"] or 0))
+    return jsonify(rows)
 
 @app.get("/api/v1/portfolio")
 def api_v1_portfolio():
@@ -2564,6 +2648,7 @@ def _find_or_create_holding(posts: List[Dict[str, Any]], acc: Dict[str, Any], ti
     return p, True
 
 @app.post("/api/v1/trades")
+@app.post("/api/v1/transactions")
 def api_v1_trade():
     payload = request.get_json(silent=True) or {}
     tk = _v1_ticker(payload.get("ticker"))

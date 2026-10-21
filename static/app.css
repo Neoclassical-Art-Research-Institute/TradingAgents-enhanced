@@ -2574,7 +2574,8 @@ button.sideDrawerBtn:active { transform: none; }
 .searchToggle { display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
 .formError { background: var(--danger-soft); color: var(--sell); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 14px; }
 .tokReveal { margin-top: 12px; padding: 12px; border-radius: var(--radius-sm); background: var(--accent-soft); display: flex; flex-direction: column; gap: 8px; }
-.tokReveal pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.tokReveal pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+.tokSecret pre { flex: 1; min-width: 0; }
 .tokSecret { display: flex; gap: 8px; align-items: center; }
 .tokSecret code { flex: 1; min-width: 0; word-break: break-all; font-size: 13px; background: var(--surface-strong); padding: 8px; border-radius: 8px; }
 .tokList, .auditList { display: flex; flex-direction: column; gap: 8px; }

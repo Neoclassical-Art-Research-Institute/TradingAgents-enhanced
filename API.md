@@ -19,7 +19,14 @@ Every write is recorded in the audit log under the token's name.
 
 ## Endpoints
 
-`GET /api/v1` returns this list as JSON.
+Start here:
+
+- `GET /api/v1` lists the endpoints. Its `you` field says who you are authenticated as and
+  whether you can write (`canWrite`). `/api/v1/docs` and `/api/docs` return the same list.
+- `GET /api/v1/openapi.json` is the full OpenAPI 3 spec. `/api/v1/schema` and
+  `/api/openapi.json` return it too.
+
+If `canWrite` is `false`, the token is read-only or wasn't sent.
 
 ### Read the portfolio
 
@@ -53,6 +60,8 @@ Watchlist accounts have no `cash`, `contributions`, `netWorth` or `totalReturn`.
 Prices come from the last stored snapshot unless you pass `refresh=1`.
 
 ```
+GET /api/v1/accounts                    accounts with id, name, type, cash, contributions
+GET /api/v1/holdings[?account=…]        flat list of all holdings
 GET /api/v1/holdings/NVDA[?account=…]   holding(s) with full transaction and comment history
 ```
 
@@ -70,6 +79,7 @@ POST /api/v1/trades
   same `id`, nothing changes and you get `200 {"duplicate": true}`.
 - Selling more shares than are held still records the sell, but adds a `warning` to the response.
 - Returns `201` with the updated holding.
+- `POST /api/v1/transactions` is an alias for this endpoint.
 
 ### Record cash
 
@@ -119,7 +129,8 @@ The UI's own endpoints accept the same tokens. They are useful for edits the v1 
 
 ```
 GET    /api/accounts                      PUT /api/accounts/<id>   (name, cashFlows, …)
-GET    /api/stocks                        GET /api/stocks/<id>
+GET    /api/stocks[?full=1]               GET /api/stocks/<id>
+       (the list omits report text unless full=1; /api/stocks/<id> always includes it)
 PUT    /api/stocks/<id>/transactions/<txid>     DELETE /api/stocks/<id>/transactions/<txid>
 PUT    /api/stocks/<id>/comments/<cid>          DELETE /api/stocks/<id>/comments/<cid>
 POST   /api/refresh-snapshots             re-fetch all prices

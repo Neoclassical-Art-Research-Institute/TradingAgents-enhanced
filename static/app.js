@@ -122,6 +122,7 @@ const els = {
     cashHint: document.getElementById("cashHint"),
     cashSave: document.getElementById("cashSave"),
     cashCancel: document.getElementById("cashCancel"),
+    cashSkip: document.getElementById("cashSkip"),
     cashClose: document.getElementById("cashClose"),
     // metric guide
     guideDlg: document.getElementById("guideDlg"),
@@ -383,9 +384,10 @@ function renderAll() {
     renderAutoAllStatus();
 }
 
-// Cash-flow ledger: derive current cash + contributions (net deposits, incl.
-// implied deposits that backfill buys with no recorded deposit) from an account's
-// cashFlows plus all its holdings' buy/sell transactions, processed in date order.
+// Cash-flow ledger: derive current cash + contributions (net deposits) from an
+// account's cashFlows plus all its holdings' buy/sell transactions. Cash may go
+// negative (margin / instant buying power); a buy is never silently "funded" with
+// an invented deposit. Keep in sync with _account_ledger() in serverStock.py.
 function accountLedger(account, holdings) {
     const events = [];
     (account?.cashFlows || []).forEach((cf) => {
@@ -404,19 +406,17 @@ function accountLedger(account, holdings) {
         });
     });
     events.sort((a, b) => a.date.localeCompare(b.date));
-    let cash = 0, contributions = 0, implied = 0;
+    let cash = 0, contributions = 0;
     for (const e of events) {
         if (e.kind === 'deposit') { cash += e.amount; contributions += e.amount; }
         else if (e.kind === 'withdraw') { cash -= e.amount; contributions -= e.amount; }
-        else if (e.kind === 'buy') {
-            if (cash < e.amount - 1e-9) { const short = e.amount - cash; cash += short; contributions += short; implied += short; }
-            cash -= e.amount;
-        } else if (e.kind === 'sell') { cash += e.amount; }
+        else if (e.kind === 'buy') { cash -= e.amount; }
+        else if (e.kind === 'sell') { cash += e.amount; }
         else if (e.kind === 'dividend') { cash += e.amount; /* not a contribution — it's a return */ }
         else if (e.kind === 'fee') { cash -= e.amount; /* loss/fee reduces cash but not contributions */ }
     }
     const r2 = (x) => Math.round(x * 100) / 100;
-    return { cash: r2(cash), contributions: r2(contributions), implied: r2(implied) };
+    return { cash: r2(cash), contributions: r2(contributions) };
 }
 
 function accountNetWorth(account, holdings) {
@@ -792,7 +792,18 @@ async function loadQueueStatus() {
 }
 
 async function loadPosts() {
-    POSTS = await api("/api/stocks");
+    const fresh = await api("/api/stocks");
+    // The list omits each analysis report (it's large). Keep any report already
+    // loaded for a holding (from /api/stocks/<id>) if its analysis hasn't changed.
+    const previous = new Map(POSTS.map((p) => [p.id, p]));
+    fresh.forEach((p) => {
+        const old = previous.get(p.id);
+        if (p.analysis?.reportOmitted && old?.analysis?.report && !old.analysis.reportOmitted
+            && old.analysis.updatedAt === p.analysis.updatedAt) {
+            p.analysis = { ...p.analysis, report: old.analysis.report, reportOmitted: false };
+        }
+    });
+    POSTS = fresh;
     await loadQueueStatus();
     renderAll();
 }
@@ -1518,9 +1529,9 @@ async function loadNetworthChart(acc, holdings, period) {
     } catch (e) { console.warn('net worth build failed', e); }
 }
 
-// Pure: per-day net worth (cash + holdings@close) AND contributions (net deposits,
-// incl. implied deposits backfilling under-funded buys) from price history,
-// transactions, and the account's cash flows.
+// Pure: per-day net worth (cash + holdings@close) AND contributions (net deposits)
+// from price history, transactions, and the account's cash flows. Same cash rules
+// as accountLedger(): cash may go negative, nothing is auto-deposited.
 function computeNetworthSeries(entries, cashFlows, interval = '1d') {
     const dateSet = new Set();
     const closeMaps = {};
@@ -1577,7 +1588,7 @@ function computeNetworthSeries(entries, cashFlows, interval = '1d') {
             const e = events[evi++];
             if (e.kind === 'deposit') { cash += e.amount; contributions += e.amount; }
             else if (e.kind === 'withdraw') { cash -= e.amount; contributions -= e.amount; }
-            else if (e.kind === 'buy') { if (cash < e.amount - 1e-9) { const s = e.amount - cash; cash += s; contributions += s; } cash -= e.amount; }
+            else if (e.kind === 'buy') { cash -= e.amount; }
             else if (e.kind === 'sell') { cash += e.amount; }
             else if (e.kind === 'dividend') { cash += e.amount; }
             else if (e.kind === 'fee') { cash -= e.amount; }
@@ -1978,6 +1989,7 @@ function renderReportInto(host, content) {
 function currentReportText(post) {
     if (!post) return '';
     if (post.analysis?.report) return String(post.analysis.report);
+    if (post.analysis?.reportOmitted) return 'Loading report…';
     if (post.analysis?.summary) return String(post.analysis.summary);
     const state = getStatusState(post);
     if (state === 'queued') return 'Queued for analysis. The report will appear once the worker starts writing output.';
@@ -2469,6 +2481,13 @@ function openDetail(id) {
     els.dEdit.onclick = () => openEdit(p);
     els.dDelete.onclick = () => removePost(id);
     els.dRefresh.onclick = () => refreshSnapshot(id, { force: true });
+
+    // The holdings list omits the report; load the full holding right away
+    // (cheap, unlike the price refresh below, which waits on Yahoo).
+    api(`/api/stocks/${encodeURIComponent(id)}`).then((full) => {
+        upsertPost(full);
+        if (currentDetailId === id) syncDetailPanels(full);
+    }).catch(() => {});
 
     // Immediately refresh current prices for this post without waiting for analysis
     refreshSnapshot(id, { force: true });
@@ -3893,7 +3912,8 @@ async function saveTxn() {
     if (isNaN(shares) || shares <= 0) { showToast('Enter a share quantity.'); els.txnShares.focus(); return; }
     if (isNaN(price) || price < 0) { showToast('Enter a price.'); els.txnPrice.focus(); return; }
     const body = { type: txnTypeValue(), shares, price, fee: parseFloat(els.txnFee.value) || 0, date: els.txnDate.value || todayLocalDate(), note: els.txnNote.value.trim() };
-    // Over-budget guard: a new buy that exceeds available cash prompts for a deposit.
+    // Over-budget prompt: a new buy that exceeds available cash offers a deposit, but
+    // "Buy anyway" is allowed too (cash goes negative, e.g. margin).
     if (!txId && body.type === 'buy') {
         const post = getPostById(holdingId);
         const acc = post ? accountById(post.accountId) : null;
@@ -4109,13 +4129,14 @@ function openCashDlg(account, opts = {}) {
     els.cashDlg.querySelectorAll('input[name="cashType"]').forEach((r) => { r.checked = r.value === 'deposit'; });
     if (els.cashCoverMsg) {
         els.cashCoverMsg.hidden = !cover;
-        if (cover) els.cashCoverMsg.innerHTML = `This buy costs <strong>${fmtMoney(opts.cost)}</strong> but you have <strong>${fmtMoney(opts.cash)}</strong> cash. Deposit at least <strong>${fmtMoney(opts.shortfall)}</strong> to continue — or cancel the purchase.`;
+        if (cover) els.cashCoverMsg.innerHTML = `This buy costs <strong>${fmtMoney(opts.cost)}</strong> but you have <strong>${fmtMoney(opts.cash)}</strong> cash. Record a deposit with it, or buy anyway and let cash go to <strong>${fmtMoney(opts.cash - opts.cost)}</strong> (margin).`;
     }
     els.cashAmount.value = cover ? (Math.round(opts.shortfall * 100) / 100) : '';
     els.cashDate.value = (cover && opts.pending?.body?.date) ? opts.pending.body.date : todayLocalDate();
     els.cashNote.value = cover ? 'Deposit to cover purchase' : '';
     els.cashCancel.textContent = cover ? 'Cancel purchase' : 'Cancel';
     els.cashSave.textContent = cover ? 'Deposit & Buy' : 'Save';
+    if (els.cashSkip) els.cashSkip.hidden = !cover;
     updateCashHint();
     els.cashDlg.showModal();
     setTimeout(() => { try { els.cashAmount.focus(); } catch {} }, 40);
@@ -4124,11 +4145,12 @@ function updateCashHint() {
     if (!els.cashHint) return;
     const amt = parseFloat(els.cashAmount.value);
     if (CASH_CTX.mode === 'cover') {
-        const ok = !isNaN(amt) && amt >= CASH_CTX.shortfall - 1e-9;
-        els.cashSave.disabled = !ok;
-        els.cashHint.innerHTML = ok
-            ? `<span class="pos">Covers it. Cash after the buy: ${fmtMoney(CASH_CTX.cash + amt - CASH_CTX.cost)}</span>`
-            : `<span class="neg">Deposit at least ${fmtMoney(CASH_CTX.shortfall)} to enable the purchase.</span>`;
+        const valid = !isNaN(amt) && amt > 0;
+        els.cashSave.disabled = !valid;
+        const after = CASH_CTX.cash + (valid ? amt : 0) - CASH_CTX.cost;
+        els.cashHint.innerHTML = after >= -1e-9
+            ? `<span class="pos">Covers it. Cash after the buy: ${fmtMoney(after)}</span>`
+            : `<span class="neg">Cash after the buy: ${fmtMoney(after)} (negative).</span>`;
     } else {
         els.cashSave.disabled = isNaN(amt) || amt <= 0;
         els.cashHint.textContent = '';
@@ -4149,7 +4171,6 @@ async function saveCash() {
     const amount = parseFloat(els.cashAmount.value);
     if (isNaN(amount) || amount <= 0) { showToast('Enter an amount.'); els.cashAmount.focus(); return; }
     const cover = CASH_CTX.mode === 'cover';
-    if (cover && amount < CASH_CTX.shortfall - 1e-9) { showToast(`Deposit at least ${fmtMoney(CASH_CTX.shortfall)}.`); return; }
     const type = cover ? 'deposit' : cashTypeValue();
     const flow = { type, amount: Math.round(amount * 100) / 100, date: els.cashDate.value || todayLocalDate(), note: els.cashNote.value.trim() };
     els.cashSave.disabled = true;
@@ -4609,6 +4630,17 @@ els.accountDlg?.addEventListener('close', () => { els.accSave.disabled = false; 
 // Cash dialog (adjust cash / deposit to cover a buy)
 els.cashSave?.addEventListener('click', saveCash);
 els.cashCancel?.addEventListener('click', () => els.cashDlg.close());
+els.cashSkip?.addEventListener('click', async () => {
+    // Record the pending buy without a deposit; the account's cash goes negative.
+    const pending = CASH_CTX.pending;
+    if (CASH_CTX.mode !== 'cover' || !pending) return;
+    els.cashSkip.disabled = true;
+    try {
+        await commitTxn(pending.holdingId, pending.body, null);
+        els.cashDlg.close();
+    } catch (e) { showToast(`Failed to save transaction: ${e.message || e}`); }
+    els.cashSkip.disabled = false;
+});
 els.cashClose?.addEventListener('click', () => els.cashDlg.close());
 els.cashAmount?.addEventListener('input', updateCashHint);
 els.cashDlg?.querySelectorAll('input[name="cashType"]').forEach((r) => r.addEventListener('change', updateCashHint));
@@ -4999,15 +5031,27 @@ async function createToken() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, scope: modelsEl('tokScope').value, expiresInDays: modelsEl('tokExpiry').value || null }),
         });
-        const example = `curl -H "Authorization: Bearer ${t.token}" ${location.origin}/api/v1/portfolio`;
+        const origin = location.origin;
+        const example = `curl -H "Authorization: Bearer ${t.token}" ${origin}/api/v1/portfolio`;
+        const canWrite = t.scope === 'write';
+        const agentText = [
+            `You can ${canWrite ? 'read and update' : 'read'} my stock portfolio tracker at ${origin}.`,
+            `Send this HTTP header on every request: Authorization: Bearer ${t.token}`,
+            `Start with GET ${origin}/api/v1, which lists the endpoints and confirms your access, and ${origin}/api/v1/openapi.json for the full spec.`,
+            canWrite ? 'Record trades with POST /api/v1/trades (JSON body) and cash with POST /api/v1/cashflows. Always include a unique "id" for each real-world trade so retries are not double-counted. Check the portfolio before and after changes.' : 'This token is read-only.',
+        ].join('\n');
         const reveal = modelsEl('tokReveal');
         reveal.innerHTML = `<div><strong>Copy this token now.</strong> It won't be shown again.</div>
             <div class="tokSecret"><code id="tokSecret">${escapeHtml(t.token)}</code><button class="ghost" type="button" id="tokCopy">Copy</button></div>
-            <div class="muted">Try it:</div><pre class="log">${escapeHtml(example)}</pre>`;
+            <div class="muted">Instructions to paste into your agent:</div>
+            <div class="tokSecret"><pre class="log" id="tokAgentText">${escapeHtml(agentText)}</pre><button class="ghost" type="button" id="tokCopyAgent">Copy</button></div>
+            <div class="muted">Or try it yourself:</div><pre class="log">${escapeHtml(example)}</pre>`;
         reveal.hidden = false;
-        modelsEl('tokCopy')?.addEventListener('click', async () => {
-            try { await navigator.clipboard.writeText(t.token); showToast('Copied.'); } catch { showToast('Copy failed — select the text instead.'); }
-        });
+        const copy = async (text) => {
+            try { await navigator.clipboard.writeText(text); showToast('Copied.'); } catch { showToast('Copy failed — select the text instead.'); }
+        };
+        modelsEl('tokCopy')?.addEventListener('click', () => copy(t.token));
+        modelsEl('tokCopyAgent')?.addEventListener('click', () => copy(agentText));
         modelsEl('tokName').value = '';
         await refreshApiDlg();
     } catch (e) { showToast(`Failed: ${e.message || e}`); }

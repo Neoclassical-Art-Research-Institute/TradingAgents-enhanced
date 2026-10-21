@@ -403,15 +403,21 @@ def main() -> int:
                     "note": f"Opening position (history before {cutoff} flattened)",
                 })
         opening_deposit = round(opening_cash + opening_cost, 2)
+        # A negative opening balance (e.g. margin debt larger than the positions'
+        # cost) is recorded as a withdrawal so cash after the opening buys equals the
+        # real opening cash. Skipping it would leave cash too high by that amount.
+        note = (f"Opening balance (history before {cutoff} flattened: "
+                f"${opening_cash:,.2f} cash + ${opening_cost:,.2f} positions at cost)")
         if opening_deposit > 0:
             new_cash.append({
                 "id": det_id(acct_id, "opening-deposit", cutoff),
-                "date": flatten_date, "type": "deposit", "amount": opening_deposit,
-                "note": f"Opening balance (history before {cutoff} flattened: "
-                        f"${opening_cash:,.2f} cash + ${opening_cost:,.2f} positions at cost)",
+                "date": flatten_date, "type": "deposit", "amount": opening_deposit, "note": note,
             })
-        else:
-            warnings.append(f"opening deposit non-positive ({opening_deposit}); not recorded")
+        elif opening_deposit < 0:
+            new_cash.append({
+                "id": det_id(acct_id, "opening-withdrawal", cutoff),
+                "date": flatten_date, "type": "withdrawal", "amount": -opening_deposit, "note": note,
+            })
         print(f"Flatten @ {flatten_date}: cash ${opening_cash:,.2f} + positions ${opening_cost:,.2f} "
               f"-> opening deposit ${opening_deposit:,.2f}")
         held = {t: p for t, p in sorted(positions.items()) if p["shares"] > 0}
