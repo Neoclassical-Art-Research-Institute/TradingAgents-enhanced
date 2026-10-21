@@ -97,8 +97,8 @@ recent changes from the audit log (`data/audit.log`).
 
 | Setting | Value |
 |---|---|
-| Default LLM | DeepSeek `deepseek-flash` (V4.1 Flash) for both roles |
-| Other DeepSeek model | `deepseek-v4-pro` |
+| Default LLM | DeepSeek `deepseek-flash` for both roles. That API name is served by **DeepSeek-V4.1-Flash-1017** (thinking on by default); DeepSeek has no dated model names, so it follows their latest Flash release |
+| Other DeepSeek model | `deepseek-v4-pro` (DeepSeek-V4-Pro-0813, ~4x the price) |
 | Default search order | DeepSeek Search → Tavily → Google |
 | Embeddings | Local chromadb MiniLM (`embedding_provider = "local"`), no API calls |
 
@@ -172,6 +172,7 @@ from openai import OpenAI
 | `data/stocks.json` | All stock entries and analysis state |
 | `data/reports/` | Per-ticker markdown report files |
 | `data/.ta_runs/` | TradingAgents intermediate run artifacts |
+| `data/chart_cache/` | Cached price history for charts (safe to delete; refetched on demand, entries over 14 days old pruned at startup) |
 
 Reports are generated per analysis run. If no analysis has been run yet for a ticker, report-file warnings in logs are normal and harmless.
 

@@ -1046,13 +1046,7 @@ function renderNetworthPanel() {
     // Disable a fixed range when more than ~90% of it would be empty "no data" filler, i.e.
     // when the account has less than 10% of that range in actual history. 'all' is always
     // available once there's any activity. With no activity at all, leave every range usable.
-    const firstAct = accountFirstActivityDate(acc, holdings);
-    const spanDays = firstAct ? daysSinceDate(firstAct) + 1 : 0;
-    const rangeEnabled = (key) => {
-        if (!firstAct) return true;
-        if (key === 'all') return true;
-        return spanDays >= (NW_RANGE_DAYS[key] || 30) * 0.1;
-    };
+    const rangeEnabled = nwRangeEnabledFn(acc, holdings);
     if (!rangeEnabled(NW_PERIOD)) {
         // Saved range no longer has enough history: fall back to the widest enabled fixed range.
         NW_PERIOD = ['2y', '1y', '6mo', '3mo', '1mo', '5d', '1d'].find(rangeEnabled) || 'all';
@@ -1352,72 +1346,15 @@ function renderAllocationTreemap(host, rows, total) {
 // --- Net-worth-over-time chart ---------------------------------------
 let NW_PERIOD = (function () { try { return localStorage.getItem('stock:nwPeriod') || '6mo'; } catch { return '6mo'; } })();
 let NW_MODE = (function () { try { return localStorage.getItem('stock:nwMode') || 'value'; } catch { return 'value'; } })();
-let NETWORTH_CACHE = {};   // `${accountId}|${period}|${interval}` -> series
 let LAST_NW_SERIES = null; // for resize redraw
 let NW_HOVER_IDX = null;   // index into LAST_NW_SERIES.points while hovering/touching the chart
 
 const NW_CHART_PAD = { l: 60, r: 16, t: 16, b: 28 };
 
-// Calendar-day span of each fixed range. '5d' is labelled "1W"; 'all' is dynamic.
+// Calendar-day span of each fixed range. '5d' is labelled "1W"; 'all' is dynamic. The
+// interval and fetch window per range live in server_networth.py (range_config).
 const NW_RANGE_DAYS = { '1d': 1, '5d': 5, '1mo': 30, '3mo': 91, '6mo': 182, '1y': 365, '2y': 730 };
 const NW_RANGE_LABELS = { '1d': '1D', '5d': '1W', '1mo': '1M', '3mo': '3M', '6mo': '6M', '1y': '1Y', '2y': '2Y', all: 'ALL' };
-
-// Explicit interval per fixed range, calibrated to ~8 trading hours/day (not 24h) so the tick
-// granularity matches how much data actually exists in a session. yfinance has no 10m bar, so
-// 1W uses the nearest valid interval (15m). 3M uses 1h (90m bars are only served for the last
-// ~60 days by yfinance, which wouldn't cover the full 91-day window).
-const NW_RANGE_INTERVAL = {
-    '1d': '2m', '5d': '15m', '1mo': '1h', '3mo': '1h', '6mo': '1d', '1y': '1d', '2y': '1wk',
-};
-
-// yfinance's selectable intervals, with bar duration (minutes) and the max lookback yfinance
-// will serve for each. Intraday bars are only available for short spans: 1m ≤ 7d; the
-// 2m–90m group ≤ 60d; 1h ≤ 730d. Daily+ bars have effectively unlimited history.
-const NW_INTERVALS = [
-    { key: '1m',  min: 1,     maxDays: 7 },
-    { key: '2m',  min: 2,     maxDays: 60 },
-    { key: '5m',  min: 5,     maxDays: 60 },
-    { key: '15m', min: 15,    maxDays: 60 },
-    { key: '30m', min: 30,    maxDays: 60 },
-    { key: '1h',  min: 60,    maxDays: 730 },
-    { key: '90m', min: 90,    maxDays: 60 },
-    { key: '1d',  min: 1440,  maxDays: Infinity },
-    { key: '1wk', min: 10080, maxDays: Infinity },
-    { key: '1mo', min: 43200, maxDays: Infinity },
-];
-
-function nwIsIntraday(interval) { return interval === '1h' || /^\d+m$/.test(interval); }
-function nwIntervalMinutes(interval) {
-    const it = NW_INTERVALS.find((x) => x.key === interval);
-    return it ? it.min : 1440;
-}
-
-// Choose the yfinance interval whose bar duration is closest to span/100, so every range
-// renders ~100 samples. e.g. 1D → 1day/100 ≈ 14.4min → 15m; 3M → ~1day → 1d; 2Y → ~1wk.
-// Intervals whose max lookback can't cover the span are excluded.
-function nwIntervalForDays(days) {
-    const targetMin = (days * 1440) / 100;
-    let best = '1d', bestDiff = Infinity;
-    for (const it of NW_INTERVALS) {
-        if (days > it.maxDays) continue;
-        const diff = Math.abs(it.min - targetMin);
-        if (diff < bestDiff) { bestDiff = diff; best = it.key; }
-    }
-    return best;
-}
-
-// Smallest yfinance `period` string that fully covers `days` of history.
-function nwPeriodForDays(days) {
-    if (days <= 5) return '5d';
-    if (days <= 30) return '1mo';
-    if (days <= 91) return '3mo';
-    if (days <= 182) return '6mo';
-    if (days <= 365) return '1y';
-    if (days <= 730) return '2y';
-    if (days <= 1825) return '5y';
-    if (days <= 3650) return '10y';
-    return 'max';
-}
 
 // Earliest deposit/withdrawal/trade date for the account, as 'YYYY-MM-DD' (or null).
 function accountFirstActivityDate(acc, holdings) {
@@ -1437,33 +1374,6 @@ function daysSinceDate(dateStr) {
     return Math.max(0, Math.round((Date.now() - a.getTime()) / 86400000));
 }
 
-// Resolve fetch/interval/clip-window for a range key. 'all' is dynamic: it spans from the
-// first account activity to today, with a sample interval (and therefore x-axis tick size)
-// of roughly span/100 — e.g. ~100 months of history yields ~monthly ticks.
-function nwRangeConfig(rangeKey, acc, holdings) {
-    if (rangeKey === 'all') {
-        const fa = accountFirstActivityDate(acc, holdings);
-        const days = fa ? daysSinceDate(fa) + 1 : 30;
-        return { key: 'all', days, interval: nwIntervalForDays(days), fetch: nwPeriodForDays(days) };
-    }
-    const days = NW_RANGE_DAYS[rangeKey] || 30;
-    const interval = NW_RANGE_INTERVAL[rangeKey] || nwIntervalForDays(days);
-    // Intraday spans need a couple of prior sessions seeded for carry-forward, so over-fetch
-    // the very short windows to 5d; otherwise fetch the window itself.
-    const fetch = nwIsIntraday(interval) && days <= 5 ? '5d' : rangeKey;
-    return { key: rangeKey, days, interval, fetch };
-}
-
-// Bucket key for a price-history timestamp: minute resolution (snapped to the interval grid)
-// for intraday intervals, calendar-day resolution otherwise (matches how transactions/cash
-// flows are dated). Intraday keys are 'YYYY-MM-DDTHH:MM'; daily keys are 'YYYY-MM-DD'.
-function nwBucketKey(ts, interval) {
-    if (!nwIsIntraday(interval)) return new Date(ts).toISOString().slice(0, 10);
-    const stepMs = nwIntervalMinutes(interval) * 60000;
-    const snapped = Math.floor(ts / stepMs) * stepMs;
-    return new Date(snapped).toISOString().slice(0, 16);
-}
-
 function fmtNwPointDate(ds) {
     if (!ds) return '';
     if (ds.length > 10) { // intraday bucket key: YYYY-MM-DDTHH or YYYY-MM-DDTHH:MM
@@ -1475,156 +1385,200 @@ function fmtNwPointDate(ds) {
 }
 
 function invalidateNetworth(accountId) {
-    if (!accountId) { NETWORTH_CACHE = {}; return; }
-    Object.keys(NETWORTH_CACHE).forEach((k) => { if (k.startsWith(accountId + '|')) delete NETWORTH_CACHE[k]; });
+    const drop = (k) => !accountId || k.startsWith(accountId + '|');
+    [...NW_SERIES.keys()].forEach((k) => { if (drop(k)) NW_SERIES.delete(k); });
+    [...NW_PENDING.keys()].forEach((k) => { if (drop(k)) NW_PENDING.delete(k); });
 }
 
-async function loadNetworthChart(acc, holdings, period) {
+// Range is offered when the account has at least ~10% of it in real history
+// ('all' always; every range when there's no activity yet).
+function nwRangeEnabledFn(acc, holdings) {
+    const firstAct = accountFirstActivityDate(acc, holdings);
+    const spanDays = firstAct ? daysSinceDate(firstAct) + 1 : 0;
+    return (key) => {
+        if (!firstAct) return true;
+        if (key === 'all') return true;
+        return spanDays >= (NW_RANGE_DAYS[key] || 30) * 0.1;
+    };
+}
+
+// --- Net-worth series, loaded progressively
+// The server builds each account/range series (server_networth.py) and sends it in
+// passes: up to 64 points spanning the whole range first, then the points in between
+// (+64, +128, ... until complete). Each pass is drawn as it arrives, so the chart is
+// readable almost at once and only ever gains detail; all passes of a series come
+// from one build (`version`). A series is reused while its prices are fresh; once
+// they're due it is fetched again, never shown stale.
+const NW_SERIES = new Map();  // `${accountId}|${period}` -> { fp, at, version, interval, hasData, contributions, netNow, total, pts: Map(index -> point), level, done }
+const NW_PENDING = new Map(); // `${accountId}|${period}` -> { fp, promise } for level-0 requests in flight
+let NW_PREFETCH_TOKEN = 0;
+// Older versions kept whole series in localStorage; reclaim that space.
+try { Object.keys(localStorage).filter((k) => k.startsWith('nw:v1:')).forEach((k) => localStorage.removeItem(k)); } catch {}
+
+function nwMarketOpen() {
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23' }).formatToParts(new Date());
+        const get = (t) => parts.find((p) => p.type === t)?.value;
+        if (get('weekday') === 'Sat' || get('weekday') === 'Sun') return false;
+        const mins = Number(get('hour')) * 60 + Number(get('minute'));
+        return mins >= 570 && mins < 965; // 9:30–16:05 ET
+    } catch { return true; }
+}
+// Mirrors freshness_s() in server_charts.py.
+function nwFreshMs(interval) {
+    if (!nwMarketOpen()) return 6 * 3600000;
+    if (['1m', '2m', '5m'].includes(interval)) return 120000;
+    if (['15m', '30m'].includes(interval)) return 300000;
+    if (['60m', '90m', '1h'].includes(interval)) return 900000;
+    if (interval === '1d') return 1800000;
+    return 3 * 3600000;
+}
+
+// Changes whenever the account's trades or cash flows change, so a series built
+// before an edit is never reused after it.
+function nwFingerprint(acc, holdings) {
+    const parts = [];
+    (acc.cashFlows || []).forEach((cf) => parts.push(`c${cf.date}${cf.type}${cf.amount}`));
+    holdings.forEach((p) => (p.transactions || []).forEach((t) => {
+        parts.push(`${holdingTicker(p)}${t.date}${t.type}${t.shares}@${t.price}+${t.fee || 0}`);
+    }));
+    const str = parts.join('|');
+    let h = 0x811c9dc5; // FNV-1a
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return `${(h >>> 0).toString(36)}.${str.length}`;
+}
+
+function nwEntryFresh(e, fp) {
+    return !!e && e.fp === fp && Date.now() - e.at < nwFreshMs(e.interval);
+}
+
+function nwSeriesOf(e) {
+    const points = [...e.pts.keys()].sort((a, b) => a - b).map((i) => e.pts.get(i));
+    return { hasData: e.hasData, contributions: e.contributions, netNow: e.netNow, points };
+}
+
+function nwLevelUrl(accId, period, level, version) {
+    const q = new URLSearchParams({
+        account: accId, range: period, level: String(level),
+        today: todayLocalDate(), tz: String(new Date().getTimezoneOffset()),
+    });
+    if (version) q.set('version', version);
+    return `/api/networth?${q}`;
+}
+
+function nwMerge(e, res) {
+    (res.points || []).forEach(([i, date, value, contributions, noData]) => {
+        e.pts.set(i, noData ? { date, value, contributions, noData: true } : { date, value, contributions });
+    });
+    e.level = res.level;
+    e.done = !!res.done;
+}
+
+// First pass for (account, period): a fresh entry if there is one, else a new build.
+function nwStartSeries(acc, period, fp) {
+    const key = `${acc.id}|${period}`;
+    const cur = NW_SERIES.get(key);
+    if (nwEntryFresh(cur, fp)) return Promise.resolve(cur);
+    const pending = NW_PENDING.get(key);
+    if (pending && pending.fp === fp) return pending.promise;
+    const promise = api(nwLevelUrl(acc.id, period, 0)).then((res) => {
+        const e = {
+            fp, at: Date.now(), version: res.version, interval: res.interval, hasData: !!res.hasData,
+            contributions: res.contributions, netNow: res.netNow, total: res.total, pts: new Map(), level: -1, done: false,
+        };
+        nwMerge(e, res);
+        NW_SERIES.set(key, e);
+        return e;
+    }).finally(() => { if (NW_PENDING.get(key)?.promise === promise) NW_PENDING.delete(key); });
+    NW_PENDING.set(key, { fp, promise });
+    return promise;
+}
+
+// Fetch the remaining passes of a series, redrawing after each. Resolves true if the
+// server no longer has that build (the caller should start over from level 0).
+function nwRefine(acc, period, e) {
+    if (!e.refining) {
+        e.refining = (async () => {
+            while (!e.done) {
+                const res = await api(nwLevelUrl(acc.id, period, e.level + 1, e.version));
+                if (res.restart) {
+                    if (NW_SERIES.get(`${acc.id}|${period}`) === e) NW_SERIES.delete(`${acc.id}|${period}`);
+                    return true;
+                }
+                nwMerge(e, res);
+                nwShowIfCurrent(acc.id, period);
+            }
+            return false;
+        })().finally(() => { e.refining = null; });
+    }
+    return e.refining;
+}
+
+// Draw the series for (account, period) if that's what the panel shows right now.
+// A crosshair being held stays on the same date as points are added around it.
+function nwShowIfCurrent(accId, period) {
+    const cv = document.getElementById('networthCanvas');
+    const e = NW_SERIES.get(`${accId}|${period}`);
+    if (!cv || !e || getActiveAccount()?.id !== accId || NW_PERIOD !== period) return;
+    const hovered = NW_HOVER_IDX != null ? LAST_NW_SERIES?.points?.[NW_HOVER_IDX]?.date : null;
+    const series = nwSeriesOf(e);
+    if (hovered) {
+        const j = series.points.findIndex((p) => p.date === hovered);
+        NW_HOVER_IDX = j >= 0 ? j : null;
+    }
+    LAST_NW_SERIES = series;
+    drawNetworthChart(cv, series);
+    updatePeriodReturnLabel(period, series);
+}
+
+// After the visible range is drawn, fetch the first pass (≈1 KB) of the account's
+// other ranges so switching ranges shows a current chart immediately. Stops if
+// another account is selected or a newer prefetch starts.
+function nwSchedulePrefetch(acc, holdings) {
+    if (navigator.connection?.saveData) return;
+    const token = ++NW_PREFETCH_TOKEN;
+    const fp = nwFingerprint(acc, holdings);
+    const enabled = nwRangeEnabledFn(acc, holdings);
+    const ranges = Object.keys(NW_RANGE_LABELS).filter((r) => r !== NW_PERIOD && enabled(r));
+    const run = async () => {
+        for (const r of ranges) {
+            if (token !== NW_PREFETCH_TOKEN || getActiveAccount()?.id !== acc.id) return;
+            if (nwEntryFresh(NW_SERIES.get(`${acc.id}|${r}`), fp)) continue;
+            try { await nwStartSeries(acc, r, fp); } catch { return; }
+        }
+    };
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1200));
+    idle(() => { run(); }, { timeout: 3000 });
+}
+
+async function loadNetworthChart(acc, holdings, period, retried = false) {
     const canvas = document.getElementById('networthCanvas');
     if (!canvas) return;
-    const withTx = holdings.filter((p) => (p.transactions || []).length);
-    const ledger = accountLedger(acc, holdings);
-    const cfg = nwRangeConfig(period, acc, holdings);
-    const interval = cfg.interval;
-    const fetchPeriod = cfg.fetch;
-    const key = `${acc.id}|${period}|${interval}|${cfg.days}`;
+    const fp = nwFingerprint(acc, holdings);
     NW_HOVER_IDX = null;
-    if (NETWORTH_CACHE[key]) { LAST_NW_SERIES = NETWORTH_CACHE[key]; drawNetworthChart(canvas, LAST_NW_SERIES); updatePeriodReturnLabel(period, LAST_NW_SERIES); }
-    else { drawNetworthChart(canvas, null); updatePeriodReturnLabel(period, null); }
-    if (!withTx.length) {
-        const flat = { points: [], contributions: ledger.contributions, netNow: ledger.cash, hasData: false };
-        NETWORTH_CACHE[key] = flat; LAST_NW_SERIES = flat; drawNetworthChart(canvas, flat); updatePeriodReturnLabel(period, flat);
-        return;
+    const shown = nwEntryFresh(NW_SERIES.get(`${acc.id}|${period}`), fp);
+    if (shown) {
+        nwShowIfCurrent(acc.id, period);
+    } else {
+        // Nothing current to show: an empty "loading" chart, never the previous range's line.
+        LAST_NW_SERIES = null;
+        drawNetworthChart(canvas, null);
+        updatePeriodReturnLabel(period, null);
     }
     try {
-        const entries = await Promise.all(withTx.map(async (p) => {
-            const tk = holdingTicker(p);
-            try { return { p, tk, hist: await api(`/api/chart?ticker=${encodeURIComponent(tk)}&period=${encodeURIComponent(fetchPeriod)}&interval=${encodeURIComponent(interval)}`) }; }
-            catch { return { p, tk, hist: null }; }
-        }));
-        let series = computeNetworthSeries(entries, acc.cashFlows || [], interval);
-        // Clip to the visible window [today - span, today]. computeNetworthSeries keeps the
-        // pre-activity prefix flat and flags it as `noData`, so clipping just frames the
-        // selected range while preserving the gray "no data" lead-in within it.
-        if (series.hasData) {
-            const cutoff = Date.now() - cfg.days * 86400000;
-            const clipFrom = nwIsIntraday(interval)
-                ? new Date(cutoff).toISOString().slice(0, 16)
-                : new Date(cutoff).toISOString().slice(0, 10);
-            const clipped = series.points.filter((p) => p.date >= clipFrom);
-            if (clipped.length > 1) series = { ...series, points: clipped };
+        const e = await nwStartSeries(acc, period, fp);
+        if (!shown) nwShowIfCurrent(acc.id, period);
+        if (!e.done && await nwRefine(acc, period, e) && !retried) {
+            return loadNetworthChart(acc, holdings, period, true);
         }
-        // Cache under `key` unconditionally (useful for other future range switches), but only
-        // promote to LAST_NW_SERIES / redraw if this response still matches what's on screen.
-        // Without this guard, a slower request for a range the user has since clicked away from
-        // can resolve later and silently clobber LAST_NW_SERIES — its own draw call is skipped,
-        // but the next hover reads the stale series and redraws the wrong range over the chart.
-        NETWORTH_CACHE[key] = series;
-        const cv = document.getElementById('networthCanvas');
-        if (cv && getActiveAccount()?.id === acc.id && NW_PERIOD === period) {
-            LAST_NW_SERIES = series;
-            drawNetworthChart(cv, series);
-            updatePeriodReturnLabel(period, series);
-        }
-    } catch (e) { console.warn('net worth build failed', e); }
-}
-
-// Pure: per-day net worth (cash + holdings@close) AND contributions (net deposits)
-// from price history, transactions, and the account's cash flows. Same cash rules
-// as accountLedger(): cash may go negative, nothing is auto-deposited.
-function computeNetworthSeries(entries, cashFlows, interval = '1d') {
-    const dateSet = new Set();
-    const closeMaps = {};
-    entries.forEach(({ tk, hist }) => {
-        const m = new Map();
-        if (hist && Array.isArray(hist.timestamps)) {
-            hist.timestamps.forEach((ts, i) => { const ds = nwBucketKey(ts, interval); m.set(ds, hist.closes[i]); dateSet.add(ds); });
-        }
-        closeMaps[tk] = m;
-    });
-    const txByTk = {};
-    entries.forEach(({ p, tk }) => {
-        txByTk[tk] = (p.transactions || [])
-            .filter((t) => t && (t.type === 'buy' || t.type === 'sell') && Number(t.shares) > 0)
-            .slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
-    });
-
-    // Ordered cash-event stream: deposits/withdrawals + buys/sells.
-    const events = [];
-    (cashFlows || []).forEach((cf) => { const amt = Number(cf?.amount) || 0; if (amt > 0) { const kind = cf.type === 'withdrawal' ? 'withdraw' : (cf.type === 'dividend' || cf.type === 'outside-gain') ? 'dividend' : (cf.type === 'fee' || cf.type === 'outside-loss') ? 'fee' : 'deposit'; events.push({ date: String(cf.date || ''), kind, amount: amt }); } });
-    entries.forEach(({ p }) => (p.transactions || []).forEach((t) => {
-        if (!t || (t.type !== 'buy' && t.type !== 'sell') || !(Number(t.shares) > 0)) return;
-        const gross = Number(t.shares) * Number(t.price), fee = Number(t.fee) || 0;
-        events.push({ date: String(t.date || ''), kind: t.type, amount: t.type === 'buy' ? gross + fee : gross - fee });
-    }));
-    events.sort((a, b) => a.date.localeCompare(b.date));
-
-    // Daily close history can lag "today" by a session or more (e.g. a deposit/buy made
-    // today has no close yet). Without this, an event dated past the last available close
-    // is never walked — the series stays all-zero and the "trim empty prefix" step finds
-    // nothing to trim to. Stretch the date axis to cover every event plus today; the
-    // carry-forward `lastClose` below prices those extra days at the latest known close.
-    // For daily+ modes, adding the event date ensures transactions that fall after the last
-    // available close are still walked and their cash-flow effect is reflected. Intraday modes
-    // intentionally use only the real market-hours bars yfinance returns (see below).
-    const intraday = nwIsIntraday(interval);
-    events.forEach((e) => { if (e.date && !intraday) dateSet.add(e.date); });
-    if (!intraday) dateSet.add(todayLocalDate());
-
-    let dates = Array.from(dateSet).sort();
-
-    // Intraday: do NOT synthesize buckets for off-market spans. yfinance only returns bars
-    // during market hours, so plotting those bars directly (concatenated by sample index)
-    // gives a continuous Robinhood-style line — overnight/weekend gaps collapse to a single
-    // segment between sessions instead of a long flat carry-forward stretch. We also skip the
-    // "now" bucket so the line ends at the last real trade rather than dragging flat to the
-    // current off-market time.
-    if (!dates.length) return { points: [], contributions: 0, netNow: 0, hasData: false };
-
-    let cash = 0, contributions = 0, evi = 0;
-    const lastClose = {}; entries.forEach(({ tk }) => { lastClose[tk] = null; });
-    let points = dates.map((ds) => {
-        while (evi < events.length && events[evi].date <= ds) {
-            const e = events[evi++];
-            if (e.kind === 'deposit') { cash += e.amount; contributions += e.amount; }
-            else if (e.kind === 'withdraw') { cash -= e.amount; contributions -= e.amount; }
-            else if (e.kind === 'buy') { cash -= e.amount; }
-            else if (e.kind === 'sell') { cash += e.amount; }
-            else if (e.kind === 'dividend') { cash += e.amount; }
-            else if (e.kind === 'fee') { cash -= e.amount; }
-        }
-        let holdings = 0;
-        entries.forEach(({ tk }) => {
-            const c = closeMaps[tk].get(ds); if (c != null) lastClose[tk] = c;
-            const close = lastClose[tk]; if (close == null) return;
-            let sh = 0;
-            for (const t of txByTk[tk]) { if (String(t.date || '') <= ds) sh += (t.type === 'buy' ? 1 : -1) * Number(t.shares); else break; }
-            if (sh > 0) holdings += sh * close;
-        });
-        return { date: ds, value: cash + holdings, contributions };
-    });
-    // Instead of trimming the empty prefix before first activity, keep those points and flag
-    // them `noData`, flattening them to the first real value. The chart renders that span as a
-    // flat gray line back to the start of the selected range (rather than a misleading drop to
-    // zero), so a 1-day-old account still fills out a 1M/3M window with a clear "no data" lead-in.
-    const firstEvent = events.length ? events[0].date.slice(0, 10) : null;
-    if (firstEvent) {
-        let firstRealIdx = points.findIndex((p) => p.date.slice(0, 10) >= firstEvent);
-        if (firstRealIdx < 0) firstRealIdx = points.length - 1;
-        const seed = points[firstRealIdx] || points[points.length - 1];
-        const seedVal = seed ? seed.value : 0;
-        const seedContrib = seed ? seed.contributions : 0;
-        points = points.map((p, i) => i < firstRealIdx
-            ? { ...p, value: seedVal, contributions: seedContrib, noData: true }
-            : p);
-    }
-    return { points, contributions, netNow: points.length ? points[points.length - 1].value : 0, hasData: true };
+        nwSchedulePrefetch(acc, holdings);
+    } catch (err) { console.warn('net worth load failed', err); }
 }
 
 // Return over just the selected window, as opposed to the account's whole-life total
 // return: last point's (value − contributions) minus the window's starting value. A window
 // that starts before the account existed naturally collapses to the total return, since
-// computeNetworthSeries seeds the noData prefix to the first real point's value/contributions.
+// the server's series seeds the noData prefix to the first real point's value/contributions.
 function periodReturnFromSeries(series) {
     const pts = series?.points || [];
     if (!series?.hasData || pts.length < 2) return null;
@@ -3298,6 +3252,8 @@ function drawFinancialChart(canvas, series, prefs, opts = {}) {
     }
 }
 
+const DETAIL_CHART_CACHE = new Map(); // `${ticker}|${period}|${interval}` -> { at, raw }, oldest first
+
 async function loadChartInto(ticker) {
     window._activeTicker = ticker;
     const chartHost = document.querySelector('.chartWrap');
@@ -3311,11 +3267,25 @@ async function loadChartInto(ticker) {
     try {
         // Fetch chart data. yfinance can emit NaN for partial/current bars which is not
         // valid JSON. Parse as text first and replace bare NaN tokens with null.
-        const chartUrl = `${API_BASE}/api/chart?ticker=${encodeURIComponent(ticker)}&period=${encodeURIComponent(period)}&interval=${encodeURIComponent(interval)}`;
-        const resp = await fetch(chartUrl);
-        if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
-        const text = await resp.text();
-        const raw = JSON.parse(text.replace(/\bNaN\b/g, 'null'));
+        // Recently viewed charts come from memory (same freshness windows as the
+        // server's cache), so reopening a holding or flipping periods is instant.
+        const cacheKey = `${ticker}|${period}|${interval}`;
+        const hit = DETAIL_CHART_CACHE.get(cacheKey);
+        let raw;
+        if (hit && Date.now() - hit.at < nwFreshMs(interval)) {
+            raw = hit.raw;
+        } else {
+            const chartUrl = `${API_BASE}/api/chart?ticker=${encodeURIComponent(ticker)}&period=${encodeURIComponent(period)}&interval=${encodeURIComponent(interval)}`;
+            const resp = await fetch(chartUrl);
+            if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+            const text = await resp.text();
+            raw = JSON.parse(text.replace(/\bNaN\b/g, 'null'));
+            if (raw?.timestamps?.length) {
+                DETAIL_CHART_CACHE.delete(cacheKey);
+                DETAIL_CHART_CACHE.set(cacheKey, { at: Date.now(), raw });
+                while (DETAIL_CHART_CACHE.size > 60) DETAIL_CHART_CACHE.delete(DETAIL_CHART_CACHE.keys().next().value);
+            }
+        }
 
         // Build aligned, clean OHLCV arrays – drop any bar where Close is null/non-finite.
         const rawCloses = raw.closes || [];
@@ -4768,7 +4738,8 @@ function syncModelDatalists() {
     }
     host.innerHTML = MODELS.catalog.map((p) => {
         const names = Array.from(new Set([...(p.models || []), ...(MODELS.liveModels[p.id] || [])]));
-        return `<datalist id="${escapeHtml(modelDatalistId(p.id))}">${names.map((n) => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
+        const notes = p.modelNotes || {};
+        return `<datalist id="${escapeHtml(modelDatalistId(p.id))}">${names.map((n) => `<option value="${escapeHtml(n)}"${notes[n] ? ` label="${escapeHtml(notes[n])}"` : ''}></option>`).join('')}</datalist>`;
     }).join('');
 }
 
@@ -4792,6 +4763,12 @@ function renderLlmChain() {
             `<option value="${escapeHtml(p.id)}"${p.id === e.provider ? ' selected' : ''}>${escapeHtml(p.label)}${p.available ? '' : ' (no key)'}</option>`).join('');
         const prov = providerById(e.provider);
         const warn = prov && !prov.available ? `<div class="chainWarn">No API key — set ${escapeHtml(prov.apiKeyEnv || '')} in .env, or this entry is skipped.</div>` : '';
+        // Show which release an undated model name currently maps to (e.g. deepseek-flash).
+        const notes = prov?.modelNotes || {};
+        const noteText = e.deep === e.quick
+            ? (notes[e.deep] ? `Deep & quick: ${notes[e.deep]}` : '')
+            : [notes[e.deep] && `Deep: ${notes[e.deep]}`, notes[e.quick] && `Quick: ${notes[e.quick]}`].filter(Boolean).join(' · ');
+        const note = noteText ? `<div class="chainStatus muted">${escapeHtml(noteText)}</div>` : '';
         const dl = escapeHtml(modelDatalistId(e.provider));
         return `<div class="chainRow" data-idx="${i}">
             <span class="chainRank">${i === 0 ? 'Primary' : `Fallback ${i}`}</span>
@@ -4804,7 +4781,7 @@ function renderLlmChain() {
                 <button class="ghost iconBtn chainDown" type="button" title="Move down" aria-label="Move down"${i === MODELS.llm.length - 1 ? ' disabled' : ''}>↓</button>
                 <button class="ghost iconBtn chainRemove" type="button" title="Remove" aria-label="Remove"${MODELS.llm.length === 1 ? ' disabled' : ''}>✕</button>
             </span>
-            ${warn}
+            ${note}${warn}
         </div>`;
     }).join('');
 }

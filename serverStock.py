@@ -1,12 +1,14 @@
 # server.py
 import os, json, re, uuid, threading, time, traceback
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, Any, List
 from flask import Flask, g, jsonify, request, send_from_directory, render_template, Response, stream_with_context, redirect, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 from zoneinfo import ZoneInfo
 
 from server_auth import init_auth, require_admin
+from server_charts import ChartStore
+from server_networth import RANGES as NW_RANGES, NetworthService
 from server_openapi import build_spec as build_openapi_spec
 from server_settings import SettingsError, SettingsStore
 from tradingagents.llm_providers import list_remote_models, normalize_chain_entry
@@ -2325,17 +2327,13 @@ def bulk_auto_analyze():
 TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-=^]{0,14}$")
 CHART_PERIODS = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
 CHART_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "4h", "1d", "5d", "1wk", "1mo", "3mo"}
-_CHART_CACHE: Dict[Any, Any] = {}  # (ticker, period, interval) -> (timestamp, payload)
-_CHART_TTL = 60.0  # seconds; the net-worth chart re-fetches every holding on each range click
+CHARTS = ChartStore(DATA_DIR, get_chart_data)
 
 @app.get("/api/chart")
 def chart():
     """
-    Returns OHLCV series suitable for line or candlestick charts.
-    Params: ticker, period=6mo, interval=1d
-    Cached briefly (see _CHART_TTL) since the net-worth chart fans out one request per
-    holding on every range switch — without a cache that's N live yfinance round-trips
-    on every click, which is the main source of the visible "freeze" when changing ranges.
+    OHLCV series for line or candlestick charts. Params: ticker, period=6mo, interval=1d.
+    Served from ChartStore (disk + memory, refreshed ahead of expiry; see server_charts.py).
     """
     ticker = (request.args.get("ticker") or "").upper().strip()
     if not TICKER_RE.match(ticker):
@@ -2344,15 +2342,34 @@ def chart():
     interval = request.args.get("interval") or "1d"
     if period not in CHART_PERIODS or interval not in CHART_INTERVALS:
         return jsonify({"message": "Unsupported period or interval"}), 400
-    key = (ticker, period, interval)
-    now = time.time()
-    cached = _CHART_CACHE.get(key)
-    if cached and (now - cached[0] < _CHART_TTL):
-        return jsonify(cached[1])
-    data = get_chart_data(ticker, period, interval)
-    if data.get("timestamps"):
-        _CHART_CACHE[key] = (now, data)
-    return jsonify(data)
+    return jsonify(CHARTS.get(ticker, period, interval))
+
+@app.get("/api/networth")
+def networth():
+    """An account's net-worth series for one chart range, sent progressively.
+
+    Params: account=<id>, range=1d|5d|1mo|3mo|6mo|1y|2y|all, level=0.., version
+    (from level 0; required for level > 0), today=YYYY-MM-DD and tz=<minutes, as JS
+    getTimezoneOffset()> from the viewer. Level 0 returns up to 64 points spanning
+    the range; each further level fills in between until "done". If the build a
+    version refers to is gone, the response is {"restart": true}.
+    """
+    acc = next((a for a in _ensure_accounts() if str(a.get("id")) == str(request.args.get("account"))), None)
+    if not acc:
+        return jsonify({"message": "Unknown account"}), 404
+    range_key = request.args.get("range") or "6mo"
+    today = request.args.get("today") or datetime.now(APP_TZ).date().isoformat()
+    try:
+        level = int(request.args.get("level") or 0)
+        tz = int(request.args.get("tz") or 0)
+        date.fromisoformat(today)
+    except ValueError:
+        return jsonify({"message": "level and tz must be integers, today YYYY-MM-DD"}), 400
+    if range_key not in NW_RANGES or not (0 <= level <= 16) or not (-900 <= tz <= 900):
+        return jsonify({"message": "Unsupported range, level or tz"}), 400
+    holdings = [p for p in _read() if str(p.get("accountId")) == str(acc.get("id"))]
+    return jsonify(NETWORTH.level(acc, holdings, range_key, level, request.args.get("version"),
+                                  int(time.time() * 1000), tz, today))
 
 @app.get("/api/fundamentals/<ticker>")
 def fundamentals(ticker):
@@ -2453,6 +2470,8 @@ def _account_ledger(account: Dict[str, Any], holdings: List[Dict[str, Any]]) -> 
         elif kind == "fee":
             cash -= amt
     return {"cash": round(cash, 2), "contributions": round(contributions, 2)}
+
+NETWORTH = NetworthService(CHARTS, lambda acc, holdings: _account_ledger(acc, holdings))
 
 def _holding_summary(p: Dict[str, Any]) -> Dict[str, Any]:
     ticker = (p.get("tickers") or [p.get("ticker")] or [""])[0] or ""

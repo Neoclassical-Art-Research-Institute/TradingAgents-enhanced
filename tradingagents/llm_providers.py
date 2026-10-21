@@ -64,9 +64,14 @@ LLM_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "kind": "deepseek",
         "backend_url": "https://api.deepseek.com",
         "api_key_env": "DEEPSEEK_API_KEY",
-        # deepseek-flash = DeepSeek-V4.1-Flash (2026-10-17). The legacy name
-        # deepseek-v4-flash is still accepted by the API but routed to the same model.
+        # The API has no dated names: "deepseek-flash" is whatever Flash release is
+        # current (DeepSeek-V4.1-Flash-1017 since 2026-10-17). The legacy name
+        # deepseek-v4-flash is still accepted but routed to the same model.
         "models": ["deepseek-flash", "deepseek-v4-pro"],
+        "model_notes": {
+            "deepseek-flash": "DeepSeek-V4.1-Flash-1017 · thinking",
+            "deepseek-v4-pro": "DeepSeek-V4-Pro-0813 · thinking",
+        },
         "default_deep": "deepseek-flash",
         "default_quick": "deepseek-flash",
         "list_models": True,
@@ -306,6 +311,7 @@ def catalog(config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
             "available": provider_available(pid, config),
             "apiKeyEnv": spec.get("api_key_env"),
             "models": list(spec.get("models") or []),
+            "modelNotes": dict(spec.get("model_notes") or {}),
             "defaultDeep": spec.get("default_deep") or "",
             "defaultQuick": spec.get("default_quick") or "",
             "canListModels": bool(spec.get("list_models")),
